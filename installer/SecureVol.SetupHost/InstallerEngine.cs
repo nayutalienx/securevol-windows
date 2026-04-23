@@ -391,7 +391,34 @@ internal static class InstallerEngine
             throw new InvalidOperationException($"Failed to stop the SecureVol service. {output}".Trim());
         }
 
-        WaitForServiceState(serviceName, "STOPPED", TimeSpan.FromSeconds(20));
+        if (TryWaitForServiceState(serviceName, "STOPPED", TimeSpan.FromSeconds(20)))
+        {
+            return;
+        }
+
+        var serviceProcessId = GetServiceProcessId(serviceName);
+        if (serviceProcessId.HasValue && serviceProcessId.Value > 0)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(serviceProcessId.Value);
+                Console.WriteLine($"[SecureVol] Forcing hung service '{serviceName}' to exit via PID {serviceProcessId.Value}.");
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit(5000);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SecureVol] Forced service-stop warning for '{serviceName}': {ex.Message}");
+            }
+        }
+
+        if (!TryWaitForServiceState(serviceName, "STOPPED", TimeSpan.FromSeconds(10)))
+        {
+            throw new InvalidOperationException($"Timed out waiting for service '{serviceName}' to reach state 'STOPPED'.");
+        }
     }
 
     private static bool TryEnsureFilterLoaded(string driverServiceName, bool testSignedDriver, out string? deferredReason)
@@ -509,18 +536,54 @@ internal static class InstallerEngine
 
     private static void WaitForServiceState(string serviceName, string expectedState, TimeSpan timeout)
     {
+        if (TryWaitForServiceState(serviceName, expectedState, timeout))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException($"Timed out waiting for service '{serviceName}' to reach state '{expectedState}'.");
+    }
+
+    private static bool TryWaitForServiceState(string serviceName, string expectedState, TimeSpan timeout)
+    {
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
             if (string.Equals(GetServiceState(serviceName), expectedState, StringComparison.OrdinalIgnoreCase))
             {
-                return;
+                return true;
             }
 
             Thread.Sleep(500);
         }
+        
+        return false;
+    }
 
-        throw new InvalidOperationException($"Timed out waiting for service '{serviceName}' to reach state '{expectedState}'.");
+    private static int? GetServiceProcessId(string serviceName)
+    {
+        var output = RunProcessCapture("sc.exe", $"queryex {serviceName}", allowNonZeroExit: true, out var exitCode);
+        if (exitCode != 0)
+        {
+            return null;
+        }
+
+        foreach (var rawLine in output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            if (!line.StartsWith("PID", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var parts = line.Split(':', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length == 2 && int.TryParse(parts[1], out var pid))
+            {
+                return pid;
+            }
+        }
+
+        return null;
     }
 
     private static void CreateStartMenuShortcuts(InstallerPlan plan, InstalledLayout layout)
