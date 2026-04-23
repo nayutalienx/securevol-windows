@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
+using Microsoft.Win32;
 using SecureVol.Common;
 using SecureVol.Common.Policy;
 
@@ -66,7 +67,7 @@ internal static class InstallerEngine
             enableTestSigning: options.EnableTestSigning);
 
         InstallOrUpdateService(plan.ServiceName, installLayout.ServiceExecutable);
-        InstallOrUpdateDriver(installLayout.DriverInfPath);
+        InstallOrUpdateDriver(installLayout.DriverInfPath, installLayout.DriverRoot, plan.DriverServiceName);
         StartService(plan.ServiceName);
 
         if (!rebootRequired)
@@ -243,12 +244,95 @@ internal static class InstallerEngine
         }
     }
 
-    private static void InstallOrUpdateDriver(string driverInfPath)
+    private static void InstallOrUpdateDriver(string driverInfPath, string driverPackageRoot, string driverServiceName)
     {
-        RunProcess(
+        var packagedDriverBinary = Path.Combine(driverPackageRoot, "SecureVolFlt.sys");
+        var installedDriverBinary = Path.Combine(Environment.SystemDirectory, "drivers", "SecureVolFlt.sys");
+
+        var output = RunProcessCapture(
             Path.Combine(Environment.SystemDirectory, "rundll32.exe"),
             $@"setupapi.dll,InstallHinfSection DefaultInstall.NTamd64 132 ""{driverInfPath}""",
-            "Failed to install the SecureVol minifilter package.");
+            allowNonZeroExit: true,
+            out var exitCode);
+
+        if (exitCode != 0)
+        {
+            Console.WriteLine($"[SecureVol] SetupAPI install warning: {output}".Trim());
+        }
+
+        if (!File.Exists(installedDriverBinary))
+        {
+            if (!File.Exists(packagedDriverBinary))
+            {
+                throw new InvalidOperationException(
+                    $"SecureVolFlt.sys was not found at '{installedDriverBinary}' after SetupAPI install, and the packaged source '{packagedDriverBinary}' is missing.");
+            }
+
+            Console.WriteLine($"[SecureVol] Copying missing driver binary to '{installedDriverBinary}'.");
+            Directory.CreateDirectory(Path.GetDirectoryName(installedDriverBinary)!);
+            CopyFileWithRetry(packagedDriverBinary, installedDriverBinary, TimeSpan.FromSeconds(10));
+        }
+
+        EnsureMinifilterServiceRegistration(driverServiceName, installedDriverBinary);
+    }
+
+    private static void EnsureMinifilterServiceRegistration(string driverServiceName, string installedDriverBinary)
+    {
+        var binaryPath = @"\SystemRoot\System32\drivers\" + Path.GetFileName(installedDriverBinary);
+        var serviceDisplayName = "SecureVol VeraCrypt Volume Minifilter";
+
+        if (ServiceExists(driverServiceName))
+        {
+            RunProcess(
+                "sc.exe",
+                $@"config {driverServiceName} type= filesys start= demand error= normal binPath= ""{binaryPath}"" group= ""FSFilter Activity Monitor"" depend= FltMgr DisplayName= ""{serviceDisplayName}""",
+                "Failed to update the SecureVol minifilter service.");
+        }
+        else
+        {
+            RunProcess(
+                "sc.exe",
+                $@"create {driverServiceName} type= filesys start= demand error= normal binPath= ""{binaryPath}"" group= ""FSFilter Activity Monitor"" depend= FltMgr DisplayName= ""{serviceDisplayName}""",
+                "Failed to create the SecureVol minifilter service.");
+        }
+
+        RunProcess(
+            "sc.exe",
+            $@"description {driverServiceName} ""{serviceDisplayName}""",
+            "Failed to set the SecureVol minifilter description.");
+
+        using var serviceKey = Registry.LocalMachine.CreateSubKey($@"SYSTEM\CurrentControlSet\Services\{driverServiceName}");
+        if (serviceKey is null)
+        {
+            throw new InvalidOperationException($"The service registry key for '{driverServiceName}' could not be opened.");
+        }
+
+        serviceKey.SetValue("Type", 2, RegistryValueKind.DWord);
+        serviceKey.SetValue("Start", 3, RegistryValueKind.DWord);
+        serviceKey.SetValue("ErrorControl", 1, RegistryValueKind.DWord);
+        serviceKey.SetValue("ImagePath", binaryPath, RegistryValueKind.ExpandString);
+        serviceKey.SetValue("Group", "FSFilter Activity Monitor", RegistryValueKind.String);
+        serviceKey.SetValue("DependOnService", new[] { "FltMgr" }, RegistryValueKind.MultiString);
+        serviceKey.SetValue("DisplayName", serviceDisplayName, RegistryValueKind.String);
+        serviceKey.SetValue("Description", serviceDisplayName, RegistryValueKind.String);
+
+        using var instancesKey = serviceKey.CreateSubKey("Instances");
+        if (instancesKey is null)
+        {
+            throw new InvalidOperationException($"The Instances registry key for '{driverServiceName}' could not be created.");
+        }
+
+        const string defaultInstance = "SecureVolFlt Instance";
+        instancesKey.SetValue("DefaultInstance", defaultInstance, RegistryValueKind.String);
+
+        using var defaultInstanceKey = instancesKey.CreateSubKey(defaultInstance);
+        if (defaultInstanceKey is null)
+        {
+            throw new InvalidOperationException($"The default minifilter instance key for '{driverServiceName}' could not be created.");
+        }
+
+        defaultInstanceKey.SetValue("Altitude", "370030", RegistryValueKind.String);
+        defaultInstanceKey.SetValue("Flags", 0, RegistryValueKind.DWord);
     }
 
     private static void TryUninstallDriver(string driverInfPath)
