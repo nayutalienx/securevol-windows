@@ -209,6 +209,48 @@ function Export-TestCertificate {
     return $destination
 }
 
+function Publish-InstallerApp {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$PayloadZip,
+        [Parameter(Mandatory = $true)][string]$InstallerOutputRoot
+    )
+
+    $projectPath = Join-Path $RepoRoot 'installer\SecureVol.Installer\SecureVol.Installer.csproj'
+    $publishDir = Join-Path $InstallerOutputRoot ('SecureVol.Installer-' + $RuntimeIdentifier + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+
+    New-Item -ItemType Directory -Path $publishDir -Force | Out-Null
+
+    Write-Step 'Publishing the SecureVol GUI installer application'
+    $null = Invoke-External -FilePath 'dotnet.exe' -ArgumentList @(
+        'publish',
+        $projectPath,
+        '-c', $Configuration,
+        '-r', $RuntimeIdentifier,
+        '--self-contained', 'true',
+        "/p:SecureVolPayloadZip=$PayloadZip",
+        '-o', $publishDir
+    ) -FailureMessage 'Failed to publish SecureVol.Installer.'
+
+    $installerExe = Join-Path $publishDir 'SecureVol.Installer.exe'
+    if (-not (Test-Path $installerExe)) {
+        throw "Installer executable was not found at '$installerExe' after publish."
+    }
+
+    $zipPath = "$publishDir.zip"
+    if (Test-Path $zipPath) {
+        Remove-Item -LiteralPath $zipPath -Force
+    }
+
+    Compress-Archive -Path $publishDir -DestinationPath $zipPath
+
+    return [pscustomobject]@{
+        Directory = $publishDir
+        Executable = $installerExe
+        Zip = $zipPath
+    }
+}
+
 $repoRoot = Resolve-RepoRoot
 $OutputRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     Join-Path $repoRoot 'artifacts\installer'
@@ -216,6 +258,9 @@ $OutputRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 else {
     $OutputRoot
 }
+
+$bundleOutputRoot = Join-Path $OutputRoot ('payload-staging-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+New-Item -ItemType Directory -Path $bundleOutputRoot -Force | Out-Null
 
 Build-DriverPackage -RepoRoot $repoRoot
 $packageDir = Stage-DriverArtifacts -RepoRoot $repoRoot
@@ -232,7 +277,7 @@ $buildReleaseArgs = @(
     '-Configuration', $Configuration,
     '-RuntimeIdentifier', $RuntimeIdentifier,
     '-UiFlavor', 'imgui',
-    '-OutputRoot', $OutputRoot
+    '-OutputRoot', $bundleOutputRoot
 )
 
 if ($SkipTests) {
@@ -242,7 +287,12 @@ if ($SkipTests) {
 Write-Step 'Building the full SecureVol release bundle with the native Dear ImGui admin UI'
 Invoke-External -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $buildReleaseArgs -FailureMessage 'Build-Release.ps1 failed.'
 
-$releaseRoot = Join-Path $OutputRoot "SecureVol-$Configuration-imgui-$RuntimeIdentifier"
+$releaseRoot = Join-Path $bundleOutputRoot "SecureVol-$Configuration-imgui-$RuntimeIdentifier"
+$releaseZip = "$releaseRoot.zip"
+$installer = Publish-InstallerApp -RepoRoot $repoRoot -PayloadZip $releaseZip -InstallerOutputRoot $OutputRoot
+
 Write-Step 'Installer artifact is ready'
 Write-Host "Layout : $releaseRoot"
-Write-Host "Zip    : $releaseRoot.zip"
+Write-Host "Zip    : $releaseZip"
+Write-Host "Setup  : $($installer.Executable)"
+Write-Host "SetupZip: $($installer.Zip)"

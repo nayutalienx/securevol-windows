@@ -170,11 +170,11 @@ Copy-Item (Join-Path $repoRoot 'docs\hardening-checklist.md') $docsRoot -Force
 Copy-Item (Join-Path $repoRoot 'docs\product-backlog.md') $docsRoot -Force
 
 Write-Step 'Writing convenience launchers'
-Write-LauncherScript -Path (Join-Path $releaseRoot 'Install-SecureVol.cmd') -CommandLine '"%~dp0managed\setup\SecureVol.SetupHost.exe" install --enable-testsigning %*'
-Write-LauncherScript -Path (Join-Path $releaseRoot 'Repair-SecureVol.cmd') -CommandLine '"%~dp0managed\setup\SecureVol.SetupHost.exe" repair --enable-testsigning %*'
-Write-LauncherScript -Path (Join-Path $releaseRoot 'Uninstall-SecureVol.cmd') -CommandLine '"%~dp0managed\setup\SecureVol.SetupHost.exe" uninstall %*'
-$adminExe = if ($UiFlavor -eq 'imgui') { 'SecureVol.ImGui.exe' } else { 'SecureVol.App.exe' }
-Write-LauncherScript -Path (Join-Path $releaseRoot 'Launch-SecureVol-Admin.cmd') -CommandLine ('start "" "%~dp0managed\app\{0}"' -f $adminExe)
+Copy-Item (Join-Path $repoRoot 'installer\ReleaseBootstrap\Invoke-SecureVol-Release.ps1') (Join-Path $releaseRoot 'Invoke-SecureVol-Release.ps1') -Force
+Write-LauncherScript -Path (Join-Path $releaseRoot 'Install-SecureVol.cmd') -CommandLine 'powershell.exe -NoLogo -ExecutionPolicy Bypass -File "%~dp0Invoke-SecureVol-Release.ps1" -Action install %*'
+Write-LauncherScript -Path (Join-Path $releaseRoot 'Repair-SecureVol.cmd') -CommandLine 'powershell.exe -NoLogo -ExecutionPolicy Bypass -File "%~dp0Invoke-SecureVol-Release.ps1" -Action repair %*'
+Write-LauncherScript -Path (Join-Path $releaseRoot 'Uninstall-SecureVol.cmd') -CommandLine 'powershell.exe -NoLogo -ExecutionPolicy Bypass -File "%~dp0Invoke-SecureVol-Release.ps1" -Action uninstall %*'
+Write-LauncherScript -Path (Join-Path $releaseRoot 'Launch-SecureVol-Admin.cmd') -CommandLine 'powershell.exe -NoLogo -ExecutionPolicy Bypass -File "%~dp0Invoke-SecureVol-Release.ps1" -Action launch'
 
 $manifest = [ordered]@{
     createdUtc = [DateTimeOffset]::UtcNow

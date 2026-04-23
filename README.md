@@ -33,7 +33,8 @@ The repository now produces a packaged Windows install bundle that contains:
 - the SecureVol Windows service,
 - the CLI,
 - the native Dear ImGui admin app,
-- the setup host used for install, repair, and uninstall.
+- the setup host used for install, repair, and uninstall,
+- a GUI installer bootstrapper for new machines.
 
 Important for the current preview:
 
@@ -44,18 +45,19 @@ Important for the current preview:
 
 ## Quick install on a new machine
 
-1. Download and extract `SecureVol-Release-imgui-win-x64.zip` from the latest preview release.
-2. Run `Install-SecureVol.cmd` as Administrator.
-3. Reboot if the installer enables test-signing.
-4. Run `Install-SecureVol.cmd` again after reboot if prompted.
-5. Launch the admin app from `Launch-SecureVol-Admin.cmd` or the Start Menu shortcut.
+1. Download and extract the latest `SecureVol.Installer-*.zip` package.
+2. Run `SecureVol.Installer.exe`.
+3. Click `Install` in the installer window.
+4. Reboot if the installer enables test-signing.
+5. Run `SecureVol.Installer.exe` again after reboot if prompted.
+6. Launch the admin app from the installer or the Start Menu shortcut.
 
 ## Project status
 
 SecureVol is already usable as a local defensive tool, but it is still in productization:
 
 - the minifilter, service, CLI, and current desktop manager work locally,
-- the packaged installer path now has a real install engine and release bundle,
+- the packaged installer path now has a real GUI bootstrapper plus the underlying install engine,
 - the native `ocornut/imgui` desktop shell is the primary admin UI,
 - a polished public installer wrapper and a production-signed driver are still pending,
 - open-source hygiene and release automation are now part of the repo instead of ad hoc local setup.

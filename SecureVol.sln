@@ -31,6 +31,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SecureVol.ImGui", "app\Secu
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SecureVol.ImGuiNative", "app\SecureVol.ImGuiNative\SecureVol.ImGuiNative.vcxproj", "{6F695BDF-6F8C-4A38-8F7E-42035F98A767}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SecureVol.Installer", "installer\SecureVol.Installer\SecureVol.Installer.csproj", "{8FFDE1E4-038B-4F20-996F-204206AED20C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -161,6 +163,18 @@ Global
 		{6F695BDF-6F8C-4A38-8F7E-42035F98A767}.Release|x64.Build.0 = Release|x64
 		{6F695BDF-6F8C-4A38-8F7E-42035F98A767}.Release|x86.ActiveCfg = Release|Win32
 		{6F695BDF-6F8C-4A38-8F7E-42035F98A767}.Release|x86.Build.0 = Release|Win32
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Debug|Any CPU.Build.0 = Debug|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Debug|x64.ActiveCfg = Debug|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Debug|x64.Build.0 = Debug|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Debug|x86.ActiveCfg = Debug|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Debug|x86.Build.0 = Debug|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Release|Any CPU.ActiveCfg = Release|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Release|Any CPU.Build.0 = Release|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Release|x64.ActiveCfg = Release|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Release|x64.Build.0 = Release|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Release|x86.ActiveCfg = Release|x64
+		{8FFDE1E4-038B-4F20-996F-204206AED20C}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -176,5 +190,6 @@ Global
 		{AA4515A6-B9BE-4358-AACB-236B9B12145A} = {F95F473B-E98A-ACD6-1986-755F447BE36F}
 		{DEB02704-9A3D-4FC3-B10E-7D892EE15B65} = {F95F473B-E98A-ACD6-1986-755F447BE36F}
 		{6F695BDF-6F8C-4A38-8F7E-42035F98A767} = {F95F473B-E98A-ACD6-1986-755F447BE36F}
+		{8FFDE1E4-038B-4F20-996F-204206AED20C} = {1860D2E4-5C43-71D5-59A5-599A4DE1DF67}
 	EndGlobalSection
 EndGlobal
