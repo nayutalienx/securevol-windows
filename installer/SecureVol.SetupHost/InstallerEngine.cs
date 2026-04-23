@@ -50,10 +50,7 @@ internal static class InstallerEngine
         Console.WriteLine($"[SecureVol] Installing to '{targetRoot}'");
         Directory.CreateDirectory(targetRoot);
 
-        // Existing installs may have the service running from the target path.
-        // Stop mutable components before copying replacement payloads into place.
-        TryStopService(plan.ServiceName);
-        TryUnloadFilter(plan.DriverServiceName);
+        PrepareInstallTargetForUpdate(targetRoot, plan.ServiceName, plan.DriverServiceName);
 
         CopyDirectory(Path.GetDirectoryName(plan.ServiceExecutable)!, installLayout.ServiceRoot);
         CopyDirectory(Path.GetDirectoryName(plan.CliExecutable)!, installLayout.CliRoot);
@@ -101,6 +98,15 @@ internal static class InstallerEngine
         }
 
         return 0;
+    }
+
+    private static void PrepareInstallTargetForUpdate(string targetRoot, string serviceName, string driverServiceName)
+    {
+        // Existing installs may have a running service, an orphaned worker, or an open UI process
+        // loaded from the current install root. Clear those first so in-place payload replacement works.
+        TryStopService(serviceName);
+        TryUnloadFilter(driverServiceName);
+        TerminateProcessesUnderPath(targetRoot, TimeSpan.FromSeconds(15));
     }
 
     public static int Uninstall(InstallerPlan plan, UninstallOptions options)
@@ -493,8 +499,168 @@ internal static class InstallerEngine
             var relative = Path.GetRelativePath(sourceRoot, file);
             var destinationFile = Path.Combine(destinationRoot, relative);
             Directory.CreateDirectory(Path.GetDirectoryName(destinationFile)!);
-            File.Copy(file, destinationFile, overwrite: true);
+            CopyFileWithRetry(file, destinationFile, TimeSpan.FromSeconds(10));
         }
+    }
+
+    private static void CopyFileWithRetry(string sourceFile, string destinationFile, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        Exception? lastError = null;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                File.Copy(sourceFile, destinationFile, overwrite: true);
+                return;
+            }
+            catch (IOException ex)
+            {
+                lastError = ex;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                lastError = ex;
+            }
+
+            Thread.Sleep(500);
+        }
+
+        throw new InvalidOperationException(
+            $"Failed to replace '{destinationFile}' within {timeout.TotalSeconds:0} seconds. {lastError?.Message}",
+            lastError);
+    }
+
+    private static void TerminateProcessesUnderPath(string rootPath, TimeSpan timeout)
+    {
+        if (!Directory.Exists(rootPath))
+        {
+            return;
+        }
+
+        var normalizedRoot = EnsureTrailingSeparator(Path.GetFullPath(rootPath));
+        var currentProcessId = Environment.ProcessId;
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            var matchingProcesses = GetProcessesUnderPath(normalizedRoot, currentProcessId);
+            if (matchingProcesses.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var process in matchingProcesses)
+            {
+                try
+                {
+                    Console.WriteLine($"[SecureVol] Stopping in-use process PID={process.Id} Path='{TryGetProcessPath(process)}'");
+                    if (!process.HasExited && process.CloseMainWindow())
+                    {
+                        process.WaitForExit(2000);
+                    }
+
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                        process.WaitForExit(5000);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[SecureVol] Process termination warning for PID={process.Id}: {ex.Message}");
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+
+            Thread.Sleep(500);
+        }
+
+        var survivors = GetProcessesUnderPath(normalizedRoot, currentProcessId);
+        if (survivors.Count == 0)
+        {
+            return;
+        }
+
+        var summary = string.Join(
+            ", ",
+            survivors.Select(process => $"{process.Id}:{Path.GetFileName(TryGetProcessPath(process) ?? process.ProcessName)}"));
+
+        foreach (var process in survivors)
+        {
+            process.Dispose();
+        }
+
+        throw new InvalidOperationException(
+            $"Timed out waiting for existing SecureVol processes to exit from '{rootPath}'. Remaining processes: {summary}");
+    }
+
+    private static List<Process> GetProcessesUnderPath(string normalizedRoot, int currentProcessId)
+    {
+        var result = new List<Process>();
+
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                if (process.Id == currentProcessId || process.HasExited)
+                {
+                    process.Dispose();
+                    continue;
+                }
+
+                var processPath = TryGetProcessPath(process);
+                if (string.IsNullOrWhiteSpace(processPath))
+                {
+                    process.Dispose();
+                    continue;
+                }
+
+                var normalizedProcessPath = Path.GetFullPath(processPath);
+                if (normalizedProcessPath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add(process);
+                }
+                else
+                {
+                    process.Dispose();
+                }
+            }
+            catch
+            {
+                process.Dispose();
+            }
+        }
+
+        return result;
+    }
+
+    private static string? TryGetProcessPath(Process process)
+    {
+        try
+        {
+            return process.MainModule?.FileName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string EnsureTrailingSeparator(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return path;
+        }
+
+        return path.EndsWith(Path.DirectorySeparatorChar) || path.EndsWith(Path.AltDirectorySeparatorChar)
+            ? path
+            : path + Path.DirectorySeparatorChar;
     }
 
     private static void TryDeleteDirectory(string path)
