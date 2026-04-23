@@ -91,16 +91,14 @@ internal sealed class InstallerForm : Form
         var controlsPanel = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
-            ColumnCount = 6,
+            ColumnCount = 1,
+            RowCount = 2,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 12)
         };
         controlsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        controlsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        controlsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        controlsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        controlsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        controlsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        controlsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        controlsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(controlsPanel, 0, 1);
 
         _enableTestSigningCheckBox = new CheckBox
@@ -108,9 +106,20 @@ internal sealed class InstallerForm : Form
             AutoSize = true,
             Text = "Enable Windows test-signing automatically if needed",
             Checked = true,
-            Margin = new Padding(0, 8, 16, 8)
+            Margin = new Padding(0, 0, 0, 10)
         };
         controlsPanel.Controls.Add(_enableTestSigningCheckBox, 0, 0);
+
+        var actionsPanel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top,
+            WrapContents = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            Margin = new Padding(0)
+        };
+        controlsPanel.Controls.Add(actionsPanel, 0, 1);
 
         _installButton = CreateActionButton("Install", async (_, _) => await RunSetupActionAsync("install"));
         _repairButton = CreateActionButton("Repair", async (_, _) => await RunSetupActionAsync("repair"));
@@ -119,11 +128,11 @@ internal sealed class InstallerForm : Form
         _openLogsButton = CreateActionButton("Open Logs", (_, _) => OpenLogsFolder());
         _quitButton = CreateActionButton("Quit", (_, _) => Close());
 
-        controlsPanel.Controls.Add(_installButton, 1, 0);
-        controlsPanel.Controls.Add(_repairButton, 2, 0);
-        controlsPanel.Controls.Add(_uninstallButton, 3, 0);
-        controlsPanel.Controls.Add(_launchAdminButton, 4, 0);
-        controlsPanel.Controls.Add(_openLogsButton, 5, 0);
+        actionsPanel.Controls.Add(_installButton);
+        actionsPanel.Controls.Add(_repairButton);
+        actionsPanel.Controls.Add(_uninstallButton);
+        actionsPanel.Controls.Add(_launchAdminButton);
+        actionsPanel.Controls.Add(_openLogsButton);
 
         var statusPanel = new TableLayoutPanel
         {
@@ -215,7 +224,7 @@ internal sealed class InstallerForm : Form
             BackColor = Color.FromArgb(37, 99, 235),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
-            Margin = new Padding(8, 0, 0, 0)
+            Margin = new Padding(0, 0, 8, 8)
         };
 
         button.FlatAppearance.BorderSize = 0;
