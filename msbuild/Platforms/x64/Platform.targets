@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <_IsNative64Available Condition="'$(_IsNative64Available)' == '' and Exists('$(VCToolsInstallDir)\bin\amd64') and ('$(PROCESSOR_ARCHITECTURE)' == 'AMD64' or '$(PROCESSOR_ARCHITEW6432)' == 'AMD64')">true</_IsNative64Available>
+    <_IsNativeEnvironment Condition="'$(_IsNativeEnvironment)' == '' and (('$(PROCESSOR_ARCHITECTURE)' == 'AMD64' and '$(UseEnv)' == 'true') or ('$(UseNativeEnvironment)' != 'false' and '$(_IsNative64Available)' == 'true'))">true</_IsNativeEnvironment>
+  </PropertyGroup>
+  <Import Project="$(CurrentVCTargetsPath)\Microsoft.Cpp.Platform.targets" />
+</Project>

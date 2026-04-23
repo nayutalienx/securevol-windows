@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <VCTargetsPath>$(CurrentVCTargetsPath)</VCTargetsPath>
+  </PropertyGroup>
+
+  <Import Project="$(MSBuildThisFileDirectory)ImportBefore\*.props" Condition="Exists('$(MSBuildThisFileDirectory)ImportBefore')" />
+
+  <Import Project="$(CurrentVCTargetsPath)\Microsoft.Cpp.MSVC.Toolset.x64.props" />
+
+  <PropertyGroup>
+    <SecureVolWdkContentRoot Condition="'$(SecureVolWdkContentRoot)' == ''">C:\Program Files (x86)\Windows Kits\10\</SecureVolWdkContentRoot>
+    <SecureVolWdkVersion Condition="'$(SecureVolWdkVersion)' == '' and Exists('$(SecureVolWdkContentRoot)build\10.0.26100.0\WindowsDriver.Default.props') and Exists('$(SecureVolWdkContentRoot)Include\10.0.26100.0\km\ntddk.h') and Exists('$(SecureVolWdkContentRoot)bin\10.0.26100.0\x64\rc.exe')">10.0.26100.0</SecureVolWdkVersion>
+    <SecureVolWdkVersion Condition="'$(SecureVolWdkVersion)' == '' and Exists('$(SecureVolWdkContentRoot)build\10.0.22621.0\WindowsDriver.Default.props') and Exists('$(SecureVolWdkContentRoot)Include\10.0.22621.0\km\ntddk.h') and Exists('$(SecureVolWdkContentRoot)bin\10.0.22621.0\x64\rc.exe')">10.0.22621.0</SecureVolWdkVersion>
+    <SecureVolWdkVersion Condition="'$(SecureVolWdkVersion)' == '' and Exists('$(SecureVolWdkContentRoot)build\10.0.22000.0\WindowsDriver.Default.props') and Exists('$(SecureVolWdkContentRoot)Include\10.0.22000.0\km\ntddk.h') and Exists('$(SecureVolWdkContentRoot)bin\10.0.22000.0\x64\rc.exe')">10.0.22000.0</SecureVolWdkVersion>
+    <SecureVolWdkVersion Condition="'$(SecureVolWdkVersion)' == '' and Exists('$(SecureVolWdkContentRoot)build\10.0.19041.0\WindowsDriver.Default.props') and Exists('$(SecureVolWdkContentRoot)Include\10.0.19041.0\km\ntddk.h') and Exists('$(SecureVolWdkContentRoot)bin\10.0.19041.0\x64\rc.exe')">10.0.19041.0</SecureVolWdkVersion>
+    <WDKContentRoot Condition="'$(WDKContentRoot)' == ''">$(SecureVolWdkContentRoot)</WDKContentRoot>
+    <WDKBuildFolder Condition="'$(WDKBuildFolder)' == ''">$(SecureVolWdkVersion)</WDKBuildFolder>
+    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)' == '' or '$(WindowsTargetPlatformVersion)' == '10.0'">$(SecureVolWdkVersion)</WindowsTargetPlatformVersion>
+    <TargetPlatformVersion Condition="'$(TargetPlatformVersion)' == '' or '$(TargetPlatformVersion)' == '10.0'">$(WindowsTargetPlatformVersion)</TargetPlatformVersion>
+    <IsKernelModeToolset>true</IsKernelModeToolset>
+    <SupportsPackaging>true</SupportsPackaging>
+    <DriverTargetPlatform Condition="'$(DriverTargetPlatform)' == ''">Desktop</DriverTargetPlatform>
+    <DDKPlatform Condition="'$(DDKPlatform)' == '' and '$(Platform)' == 'x64'">x64</DDKPlatform>
+    <DDKPlatform Condition="'$(DDKPlatform)' == '' and '$(Platform)' == 'Win32'">x86</DDKPlatform>
+    <DDKPlatform Condition="'$(DDKPlatform)' == '' and '$(Platform)' == 'arm64'">arm64</DDKPlatform>
+    <CRT_IncludePath Condition="'$(CRT_IncludePath)' == ''">$(VC_IncludePath)</CRT_IncludePath>
+    <DDK_INC_PATH Condition="'$(DDK_INC_PATH)' == ''">$(WDKContentRoot)Include\$(TargetPlatformVersion)\km\</DDK_INC_PATH>
+    <KM_IncludePath Condition="'$(KM_IncludePath)' == ''">$(WDKContentRoot)Include\$(TargetPlatformVersion)\km;$(WDKContentRoot)Include\$(TargetPlatformVersion)\km\crt</KM_IncludePath>
+    <KIT_SHARED_INC_PATH_WDK Condition="'$(KIT_SHARED_INC_PATH_WDK)' == ''">$(WDKContentRoot)Include\$(TargetPlatformVersion)\shared</KIT_SHARED_INC_PATH_WDK>
+    <DDK_LIB_PATH Condition="'$(DDK_LIB_PATH)' == ''">$(WDKContentRoot)Lib\$(TargetPlatformVersion)\km\$(DDKPlatform)\</DDK_LIB_PATH>
+    <DDK_LibraryPath_DDKPlatform Condition="'$(DDK_LibraryPath_DDKPlatform)' == ''">$(DDK_LIB_PATH)</DDK_LibraryPath_DDKPlatform>
+    <KMDF_INC_PATH Condition="'$(KMDF_INC_PATH)' == ''">$(WDKContentRoot)Include\wdf\kmdf\</KMDF_INC_PATH>
+    <KMDF_LIB_PATH Condition="'$(KMDF_LIB_PATH)' == ''">$(WDKContentRoot)Lib\wdf\kmdf\$(DDKPlatform)\</KMDF_LIB_PATH>
+  </PropertyGroup>
+
+  <Import Project="$(MSBuildThisFileDirectory)ImportAfter\*.props" Condition="Exists('$(MSBuildThisFileDirectory)ImportAfter')" />
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.Default.props" Condition="'$(SecureVolWdkVersion)' != '' and Exists('$(WDKContentRoot)build\$(WDKBuildFolder)\WindowsDriver.Default.props')" />
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\x64\WindowsKernelModeDriver\WDK.x64.WindowsKernelModeDriver.props" Condition="'$(SecureVolWdkVersion)' != '' and Exists('$(WDKContentRoot)build\$(WDKBuildFolder)\x64\WindowsKernelModeDriver\WDK.x64.WindowsKernelModeDriver.props')" />
+  <Import Project="$(WDKContentRoot)build\$(WDKBuildFolder)\x64\ImportAfter\WDK.x64.WindowsKernelModeDriver.Platform.props" Condition="'$(SecureVolWdkVersion)' != '' and Exists('$(WDKContentRoot)build\$(WDKBuildFolder)\x64\ImportAfter\WDK.x64.WindowsKernelModeDriver.Platform.props')" />
+  <PropertyGroup>
+    <EnableTestSign>false</EnableTestSign>
+  </PropertyGroup>
+  <Import Project="$(_PlatformFolder)Platform.Common.props" />
+</Project>

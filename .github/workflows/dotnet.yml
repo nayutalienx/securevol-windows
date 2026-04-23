@@ -1,0 +1,43 @@
+name: managed-ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore managed projects
+        run: |
+          dotnet restore common/SecureVol.Common/SecureVol.Common.csproj
+          dotnet restore app/SecureVol.AppCore/SecureVol.AppCore.csproj
+          dotnet restore service/SecureVol.Service/SecureVol.Service.csproj
+          dotnet restore cli/SecureVol.Cli/SecureVol.Cli.csproj
+          dotnet restore app/SecureVol.App/SecureVol.App.csproj
+          dotnet restore app/SecureVol.ImGui/SecureVol.ImGui.csproj
+          dotnet restore installer/SecureVol.SetupHost/SecureVol.SetupHost.csproj
+          dotnet restore tests/SecureVol.Service.Tests/SecureVol.Service.Tests.csproj
+
+      - name: Build managed projects
+        run: |
+          dotnet build common/SecureVol.Common/SecureVol.Common.csproj -c Release --no-restore
+          dotnet build app/SecureVol.AppCore/SecureVol.AppCore.csproj -c Release --no-restore
+          dotnet build service/SecureVol.Service/SecureVol.Service.csproj -c Release --no-restore
+          dotnet build cli/SecureVol.Cli/SecureVol.Cli.csproj -c Release --no-restore
+          dotnet build app/SecureVol.App/SecureVol.App.csproj -c Release --no-restore
+          dotnet build app/SecureVol.ImGui/SecureVol.ImGui.csproj -c Release --no-restore
+          dotnet build installer/SecureVol.SetupHost/SecureVol.SetupHost.csproj -c Release --no-restore
+          dotnet build tests/SecureVol.Service.Tests/SecureVol.Service.Tests.csproj -c Release --no-restore
+
+      - name: Run managed tests
+        run: dotnet test tests/SecureVol.Service.Tests/SecureVol.Service.Tests.csproj -c Release --no-build

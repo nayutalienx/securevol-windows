@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{2B458A66-0E69-4A75-9D61-4F942130A89F}</UniqueIdentifier>
+      <Extensions>c;cpp;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{79A95A58-66FD-4AA2-A9AE-B5C3541CC335}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+    <Filter Include="Driver Setup">
+      <UniqueIdentifier>{A9A7C4F3-B515-4BCA-B7F3-6AD0A3C92471}</UniqueIdentifier>
+      <Extensions>inf;inx;cat</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Driver.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Driver.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\common\include\SecureVolProtocol.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Inf Include="SecureVolFlt.inf">
+      <Filter>Driver Setup</Filter>
+    </Inf>
+  </ItemGroup>
+</Project>

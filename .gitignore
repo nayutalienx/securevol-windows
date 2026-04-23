@@ -1,0 +1,42 @@
+# Visual Studio / .NET
+.vs/
+bin/
+obj/
+TestResults/
+
+# Local release and publish outputs
+out/
+release/
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# NuGet / local tooling
+packages/
+artifacts/
+
+# Logs and runtime state
+*.log
+*.etl
+*.user
+*.suo
+*.cache
+imgui.ini
+scripts/policy.*.json
+
+# Windows driver build outputs
+*.cer
+*.cat
+*.pfx
+*.snk
+*.pdb
+*.ipdb
+*.iobj
+*.ilk
+*.tlog
+*.lastbuildstate
+
+# OS files
+Thumbs.db
+Desktop.ini

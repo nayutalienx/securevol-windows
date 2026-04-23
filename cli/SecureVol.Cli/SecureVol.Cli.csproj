@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>securevol</AssemblyName>
+    <RootNamespace>SecureVol.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\common\SecureVol.Common\SecureVol.Common.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,16 @@
+{
+  "protectionEnabled": true,
+  "protectedVolume": "\\\\?\\Volume{PUT-GUID-HERE}",
+  "defaultExpectedUser": ".\\vc_app",
+  "allowRules": [
+    {
+      "name": "chrome",
+      "imagePath": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "sha256": null,
+      "requireSignature": true,
+      "publisher": "Google LLC",
+      "expectedUser": ".\\vc_app",
+      "notes": "Publisher-based rule to tolerate Chrome updates. Child processes reuse chrome.exe and are covered by the same rule."
+    }
+  ]
+}

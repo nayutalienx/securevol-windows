@@ -1,0 +1,16 @@
+{
+  "protectionEnabled": true,
+  "protectedVolume": "\\\\?\\Volume{PUT-GUID-HERE}",
+  "defaultExpectedUser": ".\\vc_app",
+  "allowRules": [
+    {
+      "name": "telegram-portable",
+      "imagePath": "V:\\Apps\\Telegram\\Telegram.exe",
+      "sha256": null,
+      "requireSignature": true,
+      "publisher": "Telegram FZ-LLC",
+      "expectedUser": ".\\vc_app",
+      "notes": "Portable Telegram example. If your portable build is unsigned, replace publisher validation with an explicit SHA-256 pin."
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a defect in SecureVol behavior or packaging.
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: Exact steps, volume state, and app/service actions.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows version, VeraCrypt version, SecureVol commit/build, and whether the driver/service were already installed.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Relevant Event Log entries, `securevol-service.jsonl`, screenshots, or command output.
+    validations:
+      required: false

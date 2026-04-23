@@ -1,0 +1,59 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class=ActivityMonitor
+ClassGuid={b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider=%ManufacturerName%
+DriverVer=04/23/2026,1.0.0.0
+CatalogFile=SecureVolFlt.cat
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+SecureVolFlt.DriverFiles = 12
+
+[SourceDisksNames]
+1 = %DiskId1%,,,
+
+[SourceDisksFiles]
+SecureVolFlt.sys = 1,,
+
+[DefaultInstall.NTamd64]
+OptionDesc = %SecureVolFlt.ServiceDesc%
+CopyFiles = SecureVolFlt.DriverFiles
+
+[DefaultInstall.NTamd64.Services]
+AddService = SecureVolFlt,,SecureVolFlt_Service_Inst
+
+[DefaultUninstall.NTamd64]
+LegacyUninstall = 1
+DelFiles = SecureVolFlt.DriverFiles
+
+[DefaultUninstall.NTamd64.Services]
+DelService = SecureVolFlt,0x200
+
+[SecureVolFlt_Service_Inst]
+DisplayName    = %SecureVolFlt.ServiceDesc%
+Description    = %SecureVolFlt.ServiceDesc%
+ServiceType    = 2
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\SecureVolFlt.sys
+LoadOrderGroup = "FSFilter Activity Monitor"
+AddReg         = SecureVolFlt.AddRegistry
+Dependencies   = FltMgr
+
+[SecureVolFlt.AddRegistry]
+HKR,"Instances","DefaultInstance",0x00000000,%DefaultInstance%
+HKR,"Instances\"%DefaultInstance%,"Altitude",0x00000000,%SecureVolFltAltitude%
+HKR,"Instances\"%DefaultInstance%,"Flags",0x00010001,0
+
+[SecureVolFlt.DriverFiles]
+SecureVolFlt.sys
+
+[Strings]
+ManufacturerName = "SecureVol"
+SecureVolFlt.ServiceDesc = "SecureVol VeraCrypt Volume Minifilter"
+DiskId1 = "SecureVol Installation Disk"
+DefaultInstance = "SecureVolFlt Instance"
+; Replace this test altitude with an assigned production altitude before broad deployment.
+SecureVolFltAltitude = "370030"
