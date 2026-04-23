@@ -19,13 +19,49 @@ The repository is intentionally conservative:
 See `docs/` for threat model, build/install steps, recovery, and testing guidance.
 See `docs/product-backlog.md` for the productization roadmap.
 
+## Current UI
+
+The current admin surface is a native Win32/DX11 shell built on upstream [`ocornut/imgui`](https://github.com/ocornut/imgui).
+
+![SecureVol native Dear ImGui admin UI](docs/assets/securevol-ui.png)
+
+## Installer artifact
+
+The repository now produces a packaged Windows install bundle that contains:
+
+- the minifilter driver package,
+- the SecureVol Windows service,
+- the CLI,
+- the native Dear ImGui admin app,
+- the setup host used for install, repair, and uninstall.
+
+The first packaged preview is published as:
+
+- [v0.1.0-alpha.1](https://github.com/nayutalienx/securevol-windows/releases/tag/v0.1.0-alpha.1)
+
+Important for the current preview:
+
+- the bundled driver is still test-signed,
+- a new machine currently needs Windows test-signing mode enabled,
+- installation must be run from an elevated shell or by launching `Install-SecureVol.cmd` as Administrator,
+- if test-signing was just enabled, Windows must be rebooted and the installer run again.
+
+## Quick install on a new machine
+
+1. Download and extract `SecureVol-Release-imgui-win-x64.zip` from the latest preview release.
+2. Run `Install-SecureVol.cmd` as Administrator.
+3. Reboot if the installer enables test-signing.
+4. Run `Install-SecureVol.cmd` again after reboot if prompted.
+5. Launch the admin app from `Launch-SecureVol-Admin.cmd` or the Start Menu shortcut.
+
 ## Project status
 
 SecureVol is already usable as a local defensive tool, but it is still in productization:
 
 - the minifilter, service, CLI, and current desktop manager work locally,
-- the end-user installer path now has a real install engine, but still needs a polished signed GUI wrapper for broad public release,
-- the desktop UI is being migrated from WPF to an upstream `ocornut/imgui` Win32/DX11 shell,
+- the packaged installer path now has a real install engine and release bundle,
+- the native `ocornut/imgui` desktop shell is the primary admin UI,
+- a polished public installer wrapper and a production-signed driver are still pending,
 - open-source hygiene and release automation are now part of the repo instead of ad hoc local setup.
 
 ## Open-source expectations
@@ -44,9 +80,9 @@ SecureVol is already usable as a local defensive tool, but it is still in produc
 - `app/SecureVol.App`: current WPF manager
 - `app/SecureVol.ImGui`: transitional managed shell based on `ImGui.NET`
 - `app/SecureVol.ImGuiNative`: native shell built on official upstream `ocornut/imgui`
-- `installer/`: setup/bootstrap work
+- `installer/`: setup host and install/bootstrap work
 - `common/`: shared protocol, interop, policy, logging
-- `scripts/`: local build, install, and migration utilities
+- `scripts/`: local build, install, release, and artifact packaging utilities
 - `docs/`: threat model, testing, hardening, product backlog, and release notes
 
 ## Building
@@ -54,5 +90,6 @@ SecureVol is already usable as a local defensive tool, but it is still in produc
 - Managed projects: `dotnet build`
 - Tests: `dotnet test`
 - Driver: Visual Studio 2022 + latest WDK
+- Full packaged installer artifact: `powershell -ExecutionPolicy Bypass -File .\scripts\Build-Installer-Artifact.ps1`
 
 The GitHub Actions workflow currently validates only the managed projects. The driver still needs a dedicated WDK-capable Windows build environment.
