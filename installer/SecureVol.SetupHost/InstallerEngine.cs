@@ -70,9 +70,14 @@ internal static class InstallerEngine
         InstallOrUpdateDriver(installLayout.DriverInfPath, installLayout.DriverRoot, plan.DriverServiceName);
         StartService(plan.ServiceName);
 
-        if (!rebootRequired)
+        if (!rebootRequired &&
+            !TryEnsureFilterLoaded(
+                plan.DriverServiceName,
+                readiness.DriverCertificateFound,
+                out var deferredLoadReason))
         {
-            EnsureFilterLoaded(plan.DriverServiceName);
+            rebootRequired = true;
+            Console.WriteLine($"[SecureVol] {deferredLoadReason}");
         }
 
         if (options.CreateStartMenuShortcuts)
@@ -389,11 +394,13 @@ internal static class InstallerEngine
         WaitForServiceState(serviceName, "STOPPED", TimeSpan.FromSeconds(20));
     }
 
-    private static void EnsureFilterLoaded(string driverServiceName)
+    private static bool TryEnsureFilterLoaded(string driverServiceName, bool testSignedDriver, out string? deferredReason)
     {
+        deferredReason = null;
+
         if (IsServiceRunning(driverServiceName))
         {
-            return;
+            return true;
         }
 
         var output = RunProcessCapture("fltmc.exe", $"load {driverServiceName}", allowNonZeroExit: true, out var exitCode);
@@ -401,10 +408,24 @@ internal static class InstallerEngine
             output.Contains("already loaded", StringComparison.OrdinalIgnoreCase) ||
             output.Contains("already running", StringComparison.OrdinalIgnoreCase))
         {
-            return;
+            return true;
+        }
+
+        if (testSignedDriver && IsDriverSignatureRebootCase(output))
+        {
+            deferredReason =
+                "Driver load is deferred until after reboot because Windows is still rejecting the packaged test-signed minifilter in the current boot session. Reboot Windows, then run the installer again.";
+            return false;
         }
 
         throw new InvalidOperationException($"Failed to load the SecureVol minifilter. {output}".Trim());
+    }
+
+    private static bool IsDriverSignatureRebootCase(string output)
+    {
+        return output.Contains("0x80070241", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("cannot verify the digital signature", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("Windows cannot verify the digital signature", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void TryUnloadFilter(string driverServiceName)
