@@ -241,11 +241,8 @@ internal sealed class InstallerForm : Form
             extractRoot = await ExtractEmbeddedPayloadAsync();
             AppendInstallerMessage($"Extracted payload to '{extractRoot}'.");
 
-            var setupHost = Path.Combine(extractRoot, "managed", "setup", "SecureVol.SetupHost.exe");
-            if (!File.Exists(setupHost))
-            {
-                throw new InvalidOperationException($"SetupHost was not found at '{setupHost}'.");
-            }
+            var setupHost = ResolveSetupHostPath(extractRoot);
+            AppendInstallerMessage($"Resolved SetupHost at '{setupHost}'.");
 
             var arguments = new List<string> { action };
             if ((action == "install" || action == "repair") && _enableTestSigningCheckBox.Checked)
@@ -327,6 +324,40 @@ internal sealed class InstallerForm : Form
 
         ZipFile.ExtractToDirectory(zipPath, extractRoot, overwriteFiles: true);
         return extractRoot;
+    }
+
+    private static string ResolveSetupHostPath(string extractRoot)
+    {
+        var directPath = Path.Combine(extractRoot, "managed", "setup", "SecureVol.SetupHost.exe");
+        if (File.Exists(directPath))
+        {
+            return directPath;
+        }
+
+        var nestedMatch = Directory.EnumerateFiles(extractRoot, "SecureVol.SetupHost.exe", SearchOption.AllDirectories)
+            .Where(path => path.EndsWith(
+                Path.Combine("managed", "setup", "SecureVol.SetupHost.exe"),
+                StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path.Length)
+            .FirstOrDefault();
+
+        if (!string.IsNullOrWhiteSpace(nestedMatch))
+        {
+            return nestedMatch;
+        }
+
+        var topLevelEntries = Directory.EnumerateFileSystemEntries(extractRoot)
+            .Select(Path.GetFileName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var entrySummary = topLevelEntries.Length == 0
+            ? "<empty>"
+            : string.Join(", ", topLevelEntries);
+
+        throw new InvalidOperationException(
+            $"SetupHost was not found inside '{extractRoot}'. Top-level payload entries: {entrySummary}.");
     }
 
     private async Task<int> RunProcessAsync(string fileName, IReadOnlyCollection<string> arguments, string workingDirectory)
