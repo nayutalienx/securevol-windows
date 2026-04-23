@@ -50,6 +50,11 @@ internal static class InstallerEngine
         Console.WriteLine($"[SecureVol] Installing to '{targetRoot}'");
         Directory.CreateDirectory(targetRoot);
 
+        // Existing installs may have the service running from the target path.
+        // Stop mutable components before copying replacement payloads into place.
+        TryStopService(plan.ServiceName);
+        TryUnloadFilter(plan.DriverServiceName);
+
         CopyDirectory(Path.GetDirectoryName(plan.ServiceExecutable)!, installLayout.ServiceRoot);
         CopyDirectory(Path.GetDirectoryName(plan.CliExecutable)!, installLayout.CliRoot);
         CopyDirectory(Path.GetDirectoryName(plan.AppExecutable)!, installLayout.AppRoot);
