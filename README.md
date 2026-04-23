@@ -35,10 +35,6 @@ The repository now produces a packaged Windows install bundle that contains:
 - the native Dear ImGui admin app,
 - the setup host used for install, repair, and uninstall.
 
-The first packaged preview is published as:
-
-- [v0.1.0-alpha.1](https://github.com/nayutalienx/securevol-windows/releases/tag/v0.1.0-alpha.1)
-
 Important for the current preview:
 
 - the bundled driver is still test-signed,
