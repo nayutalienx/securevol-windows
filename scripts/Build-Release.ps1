@@ -96,6 +96,19 @@ function Get-UiProjectPath {
     }
 }
 
+function Write-LauncherScript {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$CommandLine
+    )
+
+    @(
+        '@echo off'
+        'setlocal'
+        $CommandLine
+    ) | Set-Content -Path $Path -Encoding ASCII
+}
+
 $repoRoot = Split-Path -Path $PSScriptRoot -Parent
 $OutputRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) { Join-Path $repoRoot 'release' } else { $OutputRoot }
 $releaseRoot = Join-Path $OutputRoot "SecureVol-$Configuration-$UiFlavor-$RuntimeIdentifier"
@@ -155,6 +168,13 @@ Copy-Item (Join-Path $repoRoot 'docs\build-install.md') $docsRoot -Force
 Copy-Item (Join-Path $repoRoot 'docs\testing-checklist.md') $docsRoot -Force
 Copy-Item (Join-Path $repoRoot 'docs\hardening-checklist.md') $docsRoot -Force
 Copy-Item (Join-Path $repoRoot 'docs\product-backlog.md') $docsRoot -Force
+
+Write-Step 'Writing convenience launchers'
+Write-LauncherScript -Path (Join-Path $releaseRoot 'Install-SecureVol.cmd') -CommandLine '"%~dp0managed\setup\SecureVol.SetupHost.exe" install --enable-testsigning %*'
+Write-LauncherScript -Path (Join-Path $releaseRoot 'Repair-SecureVol.cmd') -CommandLine '"%~dp0managed\setup\SecureVol.SetupHost.exe" repair --enable-testsigning %*'
+Write-LauncherScript -Path (Join-Path $releaseRoot 'Uninstall-SecureVol.cmd') -CommandLine '"%~dp0managed\setup\SecureVol.SetupHost.exe" uninstall %*'
+$adminExe = if ($UiFlavor -eq 'imgui') { 'SecureVol.ImGui.exe' } else { 'SecureVol.App.exe' }
+Write-LauncherScript -Path (Join-Path $releaseRoot 'Launch-SecureVol-Admin.cmd') -CommandLine ('start "" "%~dp0managed\app\{0}"' -f $adminExe)
 
 $manifest = [ordered]@{
     createdUtc = [DateTimeOffset]::UtcNow

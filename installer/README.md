@@ -4,10 +4,14 @@ This folder is the beginning of the end-user installer/bootstrapper path for Sec
 
 Current state:
 
-- `SecureVol.SetupHost` is a buildable scaffold.
-- It validates that the release artifacts needed for installation exist.
-- `scripts/Build-Release.ps1` now produces a repeatable managed release layout that SetupHost can target.
-- It is intended to become the engine behind a future packaged setup experience.
+- `SecureVol.SetupHost` is now the install engine for packaged release payloads.
+- It supports `check`, `plan`, `install`, `repair`, and `uninstall`.
+- `scripts/Build-Release.ps1` produces a portable release layout with:
+  - `Install-SecureVol.cmd`
+  - `Repair-SecureVol.cmd`
+  - `Uninstall-SecureVol.cmd`
+  - `Launch-SecureVol-Admin.cmd`
+- `scripts/Build-Installer-Artifact.ps1` builds the driver payload, exports the local test certificate, and then assembles the full Dear ImGui-based release bundle.
 
 Target direction:
 
@@ -17,8 +21,8 @@ Target direction:
 - provide repair and uninstall entry points,
 - become the payload that a future WiX/MSIX/bootstrapper layer wraps into a single download.
 
-Near-term direction:
+Current caveats:
 
-- keep SetupHost as the install engine and environment validator,
-- add a real GUI shell in front of it,
-- wrap the final payload in a signed installer experience instead of PowerShell scripts.
+- the installer is still command-driven rather than wizard-driven,
+- the bundled driver path currently assumes a test-signed driver package unless you replace it with a production-signed package,
+- a fully signed WiX/MSIX-style public installer is still the next step after this install engine.

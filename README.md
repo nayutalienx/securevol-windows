@@ -7,7 +7,7 @@ SecureVol is a defensive local-only Windows project that restricts read/write ac
 - a small admin CLI for policy management, state inspection, and dedicated-user launches,
 - a shared app-core library for desktop control paths,
 - a WPF desktop manager, a transitional managed ImGui shell, and a new native upstream Dear ImGui shell for user-facing operations,
-- an installer/bootstrapper scaffold that is intended to replace the current PowerShell-first bootstrap path for end users.
+- an installer/bootstrapper engine that installs the packaged backend, driver payload, and admin UI from a release bundle.
 
 The repository is intentionally conservative:
 
@@ -24,7 +24,7 @@ See `docs/product-backlog.md` for the productization roadmap.
 SecureVol is already usable as a local defensive tool, but it is still in productization:
 
 - the minifilter, service, CLI, and current desktop manager work locally,
-- the end-user installer path is still being upgraded from a bootstrap scaffold to a full release installer,
+- the end-user installer path now has a real install engine, but still needs a polished signed GUI wrapper for broad public release,
 - the desktop UI is being migrated from WPF to an upstream `ocornut/imgui` Win32/DX11 shell,
 - open-source hygiene and release automation are now part of the repo instead of ad hoc local setup.
 
