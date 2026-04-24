@@ -154,6 +154,8 @@ struct PendingOperation
 {
     std::future<OperationResult> Future;
     std::string BusyText;
+    bool BlocksControls{ true };
+    uint64_t Epoch{ 0 };
 };
 
 struct AddRuleDraft
@@ -180,11 +182,13 @@ struct AddRuleDraft
 struct AppState
 {
     DashboardSnapshot Snapshot;
-    std::optional<PendingOperation> Pending;
+    std::optional<PendingOperation> PendingAction;
+    std::optional<PendingOperation> PendingSync;
     std::string StatusLine{ "Loaded local snapshot. Click Sync to verify the live backend." };
     std::array<char, 16> MountedDrive{ "A:" };
     AddRuleDraft Draft;
     int SelectedRuleIndex{ -1 };
+    uint64_t OperationEpoch{ 0 };
     bool OpenAddRulePopup{ false };
     bool OpenMorePopup{ false };
 };
@@ -1081,34 +1085,46 @@ static void OpenShellPath(fs::path const& path)
     ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-static void StartOperation(AppState& state, std::string busyText, std::function<OperationResult()> action)
+static bool HasBlockingOperation(AppState const& state)
 {
-    if (state.Pending)
+    return state.PendingAction.has_value();
+}
+
+static bool HasSyncOperation(AppState const& state)
+{
+    return state.PendingSync.has_value();
+}
+
+static void StartOperation(AppState& state, std::string busyText, std::function<OperationResult()> action, bool blocksControls = true)
+{
+    auto& slot = blocksControls ? state.PendingAction : state.PendingSync;
+    if (slot)
     {
         return;
     }
 
-    state.Pending = PendingOperation
+    auto epoch = state.OperationEpoch;
+    if (blocksControls)
+    {
+        epoch = ++state.OperationEpoch;
+    }
+
+    slot = PendingOperation
     {
         std::async(std::launch::async, std::move(action)),
-        std::move(busyText)
+        std::move(busyText),
+        blocksControls,
+        epoch
     };
 }
 
-static void PumpPendingOperation(AppState& state)
+static void ApplyOperationResult(AppState& state, PendingOperation const& operation, OperationResult&& result)
 {
-    if (!state.Pending)
+    // A background Sync must not overwrite a newer state-changing action.
+    if (!operation.BlocksControls && operation.Epoch != state.OperationEpoch)
     {
         return;
     }
-
-    if (state.Pending->Future.wait_for(0ms) != std::future_status::ready)
-    {
-        return;
-    }
-
-    auto result = state.Pending->Future.get();
-    state.Pending.reset();
 
     if (result.HasSnapshot)
     {
@@ -1123,6 +1139,25 @@ static void PumpPendingOperation(AppState& state)
     {
         std::snprintf(state.Draft.User.data(), state.Draft.User.size(), "%s", state.Snapshot.DefaultExpectedUser.c_str());
     }
+}
+
+static void PumpPendingSlot(AppState& state, std::optional<PendingOperation>& slot)
+{
+    if (!slot || slot->Future.wait_for(0ms) != std::future_status::ready)
+    {
+        return;
+    }
+
+    auto operation = std::move(*slot);
+    auto result = operation.Future.get();
+    slot.reset();
+    ApplyOperationResult(state, operation, std::move(result));
+}
+
+static void PumpPendingOperation(AppState& state)
+{
+    PumpPendingSlot(state, state.PendingAction);
+    PumpPendingSlot(state, state.PendingSync);
 }
 
 static const char* ProtectionLabel(DashboardSnapshot const& snapshot)
@@ -1241,7 +1276,9 @@ static float ButtonWidth(char const* label, float extra = 12.0f)
 static void DrawHeader(AppState& state)
 {
     auto statusColor = ProtectionColor(state.Snapshot);
-    auto busy = state.Pending.has_value();
+    auto busy = HasBlockingOperation(state);
+    auto syncBusy = HasSyncOperation(state);
+    auto syncDisabled = syncBusy || busy;
     auto syncWidth = ButtonWidth("Sync");
     auto onWidth = ButtonWidth("On");
     auto offWidth = ButtonWidth("Off");
@@ -1264,17 +1301,27 @@ static void DrawHeader(AppState& state)
         ImGui::TextColored(statusColor, "%s", ProtectionLabel(state.Snapshot));
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, avail - controlsWidth));
 
-        if (busy)
+        if (syncDisabled)
         {
             ImGui::BeginDisabled();
         }
 
         if (ImGui::Button("Sync", ImVec2(syncWidth, 0.0f)))
         {
-            StartOperation(state, "Refreshing backend state...", [] { return RefreshDashboard(); });
+            StartOperation(state, "Refreshing backend state...", [] { return RefreshDashboard(); }, false);
+        }
+
+        if (syncDisabled)
+        {
+            ImGui::EndDisabled();
         }
 
         ImGui::SameLine();
+        if (busy)
+        {
+            ImGui::BeginDisabled();
+        }
+
         if (ImGui::Button("On", ImVec2(onWidth, 0.0f)))
         {
             auto baseline = state.Snapshot;
@@ -1339,7 +1386,7 @@ static void DrawRulesPane(AppState& state, float height)
     auto removeWidth = ButtonWidth("Remove");
     auto addWidth = ButtonWidth("Add");
 
-    auto busy = state.Pending.has_value();
+    auto busy = HasBlockingOperation(state);
     if (busy)
     {
         ImGui::BeginDisabled();
@@ -1473,7 +1520,7 @@ static void DrawSystemPane(AppState& state, float height)
     ImGui::InputText("##mounted-drive", state.MountedDrive.data(), state.MountedDrive.size());
     ImGui::SameLine();
 
-    auto busy = state.Pending.has_value();
+    auto busy = HasBlockingOperation(state);
     if (busy)
     {
         ImGui::BeginDisabled();
@@ -1544,10 +1591,15 @@ static void DrawToolsPane(AppState& state, float height)
         PostQuitMessage(0);
     }
 
-    if (state.Pending)
+    if (state.PendingAction)
     {
         ImGui::Spacing();
-        DrawEllipsizedText(state.Pending->BusyText, 44, true);
+        DrawEllipsizedText(state.PendingAction->BusyText, 44, true);
+    }
+    else if (state.PendingSync)
+    {
+        ImGui::Spacing();
+        DrawEllipsizedText(state.PendingSync->BusyText, 44, true);
     }
 }
 
@@ -1581,7 +1633,7 @@ static void DrawAddRulePopup(AppState& state)
     ImGui::InputText("sha256", state.Draft.Sha256.data(), state.Draft.Sha256.size());
     ImGui::Checkbox("require signature", &state.Draft.RequireSignature);
 
-    auto busy = state.Pending.has_value();
+    auto busy = HasBlockingOperation(state);
     if (busy)
     {
         ImGui::BeginDisabled();
