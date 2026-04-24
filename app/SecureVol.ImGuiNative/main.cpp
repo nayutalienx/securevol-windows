@@ -158,6 +158,9 @@ struct PendingOperation
     uint64_t Epoch{ 0 };
 };
 
+static std::optional<JsonObject> TryAdminCommand(JsonObject const& request, std::string& error, DWORD timeoutMs);
+static OperationResult RefreshDashboard();
+
 struct AddRuleDraft
 {
     std::array<char, 128> Name{};
@@ -764,8 +767,17 @@ static bool ApplyLocalProtectionSetting(bool enabled, DashboardSnapshot const& b
     return SaveJsonFile(PolicyPath(), policy, error);
 }
 
-static OperationResult ApplyLocalProtectionFallback(bool enabled, std::string const& rootCause, DashboardSnapshot baseline)
+static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapshot baseline)
 {
+    if (enabled && Trim(baseline.ProtectedVolume).empty())
+    {
+        auto snapshot = LoadLocalSnapshot();
+        snapshot.BackendLabel = "cached";
+        snapshot.LiveBackend = false;
+        snapshot.PipeUp = false;
+        return { false, "Set a mounted drive before enabling protection.", std::move(snapshot), true };
+    }
+
     std::string error;
     if (!ApplyLocalProtectionSetting(enabled, baseline, error))
     {
@@ -773,13 +785,31 @@ static OperationResult ApplyLocalProtectionFallback(bool enabled, std::string co
         snapshot.BackendLabel = "cached";
         snapshot.LiveBackend = false;
         snapshot.PipeUp = false;
-        return { false, "Backend control path was unavailable (" + rootCause + "), and local fallback failed: " + error, std::move(snapshot), true };
+        return { false, "Failed to write policy.json: " + error, std::move(snapshot), true };
     }
 
     std::vector<std::string> actions{ "policy saved locally" };
-    bool confirmed = false;
 
-    if (enabled)
+    std::string reloadError;
+    JsonObject reloadRequest;
+    reloadRequest.Insert(L"command", JsonValue::CreateStringValue(L"reload"));
+    if (auto reloadResponse = TryAdminCommand(reloadRequest, reloadError, 2500))
+    {
+        if (JsonBool(*reloadResponse, L"success", false))
+        {
+            actions.push_back("service reload requested");
+        }
+        else
+        {
+            actions.push_back("service reload rejected (" + JsonString(*reloadResponse, L"message", "unknown") + ")");
+        }
+    }
+    else if (!reloadError.empty())
+    {
+        actions.push_back("service reload pending (" + reloadError + ")");
+    }
+
+    if (enabled && QueryServiceStatusText(L"SecureVolFlt") != "Running")
     {
         std::string loadError;
         if (TryRunProcess(L"fltmc.exe", L"load SecureVolFlt", 2500, loadError, { 0 }))
@@ -790,48 +820,20 @@ static OperationResult ApplyLocalProtectionFallback(bool enabled, std::string co
         {
             actions.push_back("filter load pending (" + loadError + ")");
         }
-
-        confirmed = WaitForServiceStatusConfirmation(true, 6000)
-            || (QueryServiceStatusText(L"SecureVolFlt") == "Running" && QueryServiceStatusText(L"SecureVolSvc") == "Running");
-
-        auto snapshot = LoadLocalSnapshot();
-        snapshot.BackendLabel = "cached";
-        snapshot.LiveBackend = false;
-        snapshot.PipeUp = false;
-
-        if (!confirmed)
-        {
-            return {
-                false,
-                "Enable failed because SecureVol could not confirm a live driver/service path. Refusing to arm policy-only mode. Backend error: " + rootCause,
-                std::move(snapshot),
-                true
-            };
-        }
-
-        OperationResult result;
-        result.Success = true;
-        result.Message = "Backend control path was unavailable (" + rootCause + "). Applied local enable fallback: " + JoinCsv(actions) + ", confirmed by local service state.";
-        result.Snapshot = std::move(snapshot);
-        result.HasSnapshot = true;
-        return result;
     }
 
-    std::string unloadError;
-    auto unloaded = TryRunProcess(L"fltmc.exe", L"unload SecureVolFlt", 2500, unloadError, { 0 });
-    if (unloaded)
+    auto confirmed = WaitForServiceStatusConfirmation(enabled, 4000);
+    if (auto refresh = RefreshDashboard(); refresh.HasSnapshot && refresh.Success)
     {
-        actions.push_back("filter unloaded");
-        confirmed = true;
-    }
-    else
-    {
-        confirmed = WaitForServiceStatusConfirmation(false, 6000)
-            || QueryServiceStatusText(L"SecureVolFlt") != "Running";
-        if (!unloadError.empty())
+        if (refresh.Snapshot.ProtectionEnabled == enabled)
         {
-            actions.push_back("filter unload pending (" + unloadError + ")");
+            refresh.Message = enabled
+                ? "Protection enabled. " + JoinCsv(actions)
+                : "Protection paused. " + JoinCsv(actions);
+            return refresh;
         }
+
+        actions.push_back("live dashboard is stale");
     }
 
     auto snapshot = LoadLocalSnapshot();
@@ -839,12 +841,11 @@ static OperationResult ApplyLocalProtectionFallback(bool enabled, std::string co
     snapshot.LiveBackend = false;
     snapshot.PipeUp = false;
 
-    auto actionText = JoinCsv(actions);
-    auto confirmationText = confirmed ? "confirmed by local service state." : "not yet confirmed; refresh after a few seconds.";
+    auto confirmationText = confirmed ? "confirmed by local service state." : "waiting for service file watcher; click Sync in a few seconds.";
 
     OperationResult result;
     result.Success = true;
-    result.Message = "Backend control path was unavailable (" + rootCause + "). Applied local pause fallback: " + actionText + ", " + confirmationText;
+    result.Message = (enabled ? "Protection enabled locally: " : "Protection paused locally: ") + JoinCsv(actions) + ", " + confirmationText;
     result.Snapshot = std::move(snapshot);
     result.HasSnapshot = true;
     return result;
@@ -1020,50 +1021,7 @@ static OperationResult ExecuteCommandAndRefresh(JsonObject const& request, std::
 
 static OperationResult ExecuteProtectionChange(bool enabled, DashboardSnapshot baseline)
 {
-    JsonObject request;
-    request.Insert(L"command", JsonValue::CreateStringValue(L"set-protection"));
-    request.Insert(L"protectionEnabled", JsonValue::CreateBooleanValue(enabled));
-
-    std::string error;
-    auto response = TryAdminCommand(request, error, 3000);
-    if (!response)
-    {
-        return ApplyLocalProtectionFallback(enabled, error, std::move(baseline));
-    }
-
-    if (!JsonBool(*response, L"success", false))
-    {
-        return ApplyLocalProtectionFallback(enabled, JsonString(*response, L"message", "SecureVol rejected the request."), std::move(baseline));
-    }
-
-    auto refresh = RefreshDashboard();
-    if (refresh.HasSnapshot)
-    {
-        auto successMessage = enabled
-            ? "Protection enabled. It applies to new file opens only."
-            : "Protection paused.";
-
-        if (refresh.Success)
-        {
-            refresh.Message = JsonString(*response, L"message", successMessage);
-            return refresh;
-        }
-
-        refresh.Message = JsonString(*response, L"message", successMessage) + " Live refresh degraded after the command.";
-        refresh.Success = true;
-        return refresh;
-    }
-
-    auto snapshot = LoadLocalSnapshot();
-    snapshot.BackendLabel = "cached";
-    snapshot.LiveBackend = false;
-    snapshot.PipeUp = false;
-    return {
-        true,
-        enabled ? "Protection enabled. Live refresh degraded after the command." : "Protection paused. Live refresh degraded after the command.",
-        std::move(snapshot),
-        true
-    };
+    return ApplyLocalProtectionChange(enabled, std::move(baseline));
 }
 
 static std::optional<std::wstring> BrowseExecutable()
@@ -1291,7 +1249,7 @@ static void DrawHeader(AppState& state)
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("SecureVol");
         ImGui::SameLine();
-        ImGui::TextDisabled("compact-main v6");
+        ImGui::TextDisabled("compact-main v7");
         ImGui::TextDisabled("backend: %s", state.Snapshot.BackendLabel.c_str());
         DrawEllipsizedText(state.StatusLine, 44, true);
 
@@ -1707,7 +1665,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandleW(nullptr), nullptr, nullptr, nullptr, nullptr, L"SecureVolImGuiNative", nullptr };
     ::RegisterClassExW(&wc);
-    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"SecureVol CompactMain v6", WS_OVERLAPPEDWINDOW, 80, 80, static_cast<int>(760 * mainScale), static_cast<int>(560 * mainScale), nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"SecureVol CompactMain v7", WS_OVERLAPPEDWINDOW, 80, 80, static_cast<int>(760 * mainScale), static_cast<int>(560 * mainScale), nullptr, nullptr, wc.hInstance, nullptr);
 
     if (!CreateDeviceD3D(hwnd))
     {
