@@ -164,6 +164,7 @@ internal static class InstallerEngine
         AppPaths.EnsureDefaultAcls();
         if (File.Exists(AppPaths.PolicyFilePath))
         {
+            TrySeedFirstRunPolicy();
             return;
         }
 
@@ -176,6 +177,63 @@ internal static class InstallerEngine
         };
 
         policy.Save(AppPaths.PolicyFilePath);
+        TrySeedFirstRunPolicy();
+    }
+
+    private static void TrySeedFirstRunPolicy()
+    {
+        try
+        {
+            var policy = PolicyConfig.Load(AppPaths.PolicyFilePath);
+            if (!string.IsNullOrWhiteSpace(policy.ProtectedVolume) || policy.AllowRules.Count > 0)
+            {
+                return;
+            }
+
+            var mountedDrive = ResolvePreferredMountedDrive();
+            if (mountedDrive is null)
+            {
+                return;
+            }
+
+            var currentUser = WindowsIdentity.GetCurrent().Name;
+            var seeded = new PolicyConfig
+            {
+                ProtectionEnabled = false,
+                ProtectedVolume = VolumeHelpers.ResolveVolumeGuid(mountedDrive),
+                DefaultExpectedUser = string.IsNullOrWhiteSpace(currentUser) ? null : currentUser,
+                AllowRules = []
+            };
+
+            seeded.Save(AppPaths.PolicyFilePath);
+            Console.WriteLine($"[SecureVol] First-run policy initialized for mounted drive '{mountedDrive}' as user '{seeded.DefaultExpectedUser ?? "<none>"}'.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SecureVol] First-run policy initialization warning: {ex.Message}");
+        }
+    }
+
+    private static string? ResolvePreferredMountedDrive()
+    {
+        const string preferredDrive = @"A:\";
+        try
+        {
+            if (Directory.Exists(preferredDrive))
+            {
+                var drive = new DriveInfo(preferredDrive);
+                if (drive.IsReady)
+                {
+                    return preferredDrive;
+                }
+            }
+        }
+        catch
+        {
+            return null;
+        }
+
+        return null;
     }
 
     private static void ImportDriverCertificateIfPresent(string? certificatePath)

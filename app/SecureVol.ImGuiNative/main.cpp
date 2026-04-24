@@ -181,7 +181,7 @@ struct AppState
 {
     DashboardSnapshot Snapshot;
     std::optional<PendingOperation> Pending;
-    std::string StatusLine{ "Loaded local snapshot. Use Sync to verify the live backend." };
+    std::string StatusLine{ "Loaded local snapshot. Syncing live backend..." };
     std::array<char, 16> MountedDrive{ "A:" };
     AddRuleDraft Draft;
     int SelectedRuleIndex{ -1 };
@@ -960,7 +960,7 @@ static OperationResult RefreshDashboard()
     request.Insert(L"command", JsonValue::CreateStringValue(L"dashboard"));
 
     std::string error;
-    auto response = TryAdminCommand(request, error, 1200);
+    auto response = TryAdminCommand(request, error, 5000);
     if (!response)
     {
         auto fallback = LoadLocalSnapshot();
@@ -982,7 +982,7 @@ static OperationResult RefreshDashboard()
 static OperationResult ExecuteCommandAndRefresh(JsonObject const& request, std::string_view fallbackSuccess)
 {
     std::string error;
-    auto response = TryAdminCommand(request, error, 1500);
+    auto response = TryAdminCommand(request, error, 5000);
     if (!response)
     {
         return { false, error, {}, false };
@@ -1688,6 +1688,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     AppState state;
     state.Snapshot = LoadLocalSnapshot();
     state.Draft.Reset(state.Snapshot.DefaultExpectedUser);
+    StartOperation(state, "Syncing backend state...", [] { return RefreshDashboard(); });
 
     bool done = false;
     while (!done)
