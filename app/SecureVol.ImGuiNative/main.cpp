@@ -181,7 +181,7 @@ struct AppState
 {
     DashboardSnapshot Snapshot;
     std::optional<PendingOperation> Pending;
-    std::string StatusLine{ "Loaded local snapshot. Syncing live backend..." };
+    std::string StatusLine{ "Loaded local snapshot. Click Sync to verify the live backend." };
     std::array<char, 16> MountedDrive{ "A:" };
     AddRuleDraft Draft;
     int SelectedRuleIndex{ -1 };
@@ -1083,6 +1083,11 @@ static void OpenShellPath(fs::path const& path)
 
 static void StartOperation(AppState& state, std::string busyText, std::function<OperationResult()> action)
 {
+    if (state.Pending)
+    {
+        return;
+    }
+
     state.Pending = PendingOperation
     {
         std::async(std::launch::async, std::move(action)),
@@ -1688,7 +1693,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     AppState state;
     state.Snapshot = LoadLocalSnapshot();
     state.Draft.Reset(state.Snapshot.DefaultExpectedUser);
-    StartOperation(state, "Syncing backend state...", [] { return RefreshDashboard(); });
 
     bool done = false;
     while (!done)
