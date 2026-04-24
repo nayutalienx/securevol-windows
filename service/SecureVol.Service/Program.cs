@@ -18,5 +18,6 @@ builder.Services.AddSingleton<SecureVolCoordinator>();
 builder.Services.AddHostedService<SecureVolWorker>();
 builder.Services.AddHostedService<AdminPipeServer>();
 builder.Services.AddHostedService<PolicyFileWatcher>();
+builder.Services.AddHostedService<MountedVolumeWatcher>();
 
 await builder.Build().RunAsync();

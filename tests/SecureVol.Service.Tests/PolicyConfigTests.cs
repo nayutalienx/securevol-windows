@@ -12,4 +12,15 @@ public sealed class PolicyConfigTests
 
         Assert.Equal(@"\\?\Volume{12345678-1234-1234-1234-1234567890ab}", normalized);
     }
+
+    [Fact]
+    public void NormalizedProtectedMountPoint_KeepsDriveRootForm()
+    {
+        var policy = new PolicyConfig
+        {
+            ProtectedMountPoint = "A:"
+        };
+
+        Assert.Equal(@"A:\", policy.NormalizedProtectedMountPoint);
+    }
 }

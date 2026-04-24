@@ -73,7 +73,7 @@ internal static class InstallerEngine
             hasDriverCertificate: InstallerReadiness.FromPlan(plan).DriverCertificateFound,
             enableTestSigning: options.EnableTestSigning);
 
-        var serviceRestartDeferred = InstallOrUpdateService(plan.ServiceName, installLayout.ServiceExecutable);
+        var serviceRestartDeferred = InstallOrUpdateService(plan.ServiceName, installLayout.ServiceExecutable, options.AutoStart);
         var driverUpdateDeferred = InstallOrUpdateDriver(installLayout.DriverInfPath, installLayout.DriverRoot, plan.DriverServiceName);
 
         if (serviceRestartDeferred)
@@ -115,6 +115,7 @@ internal static class InstallerEngine
         Console.WriteLine($"PayloadRoot      : {installLayout.PayloadRoot}");
         Console.WriteLine($"AdminApp         : {installLayout.AppExecutable}");
         Console.WriteLine($"ServiceInstalled : {ServiceExists(plan.ServiceName)}");
+        Console.WriteLine($"ServiceAutoStart : {options.AutoStart}");
         Console.WriteLine($"DriverInstalled  : {File.Exists(installLayout.DriverInfPath)}");
         Console.WriteLine($"DriverLoaded     : {IsServiceRunning(plan.DriverServiceName)}");
         Console.WriteLine($"PolicyFile       : {AppPaths.PolicyFilePath}");
@@ -251,6 +252,7 @@ internal static class InstallerEngine
             {
                 ProtectionEnabled = false,
                 ProtectedVolume = VolumeHelpers.ResolveVolumeGuid(mountedDrive),
+                ProtectedMountPoint = mountedDrive,
                 DefaultExpectedUser = string.IsNullOrWhiteSpace(currentUser) ? null : currentUser,
                 AllowRules = []
             };
@@ -380,18 +382,19 @@ internal static class InstallerEngine
                output.Contains("Yes", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool InstallOrUpdateService(string serviceName, string serviceExecutable)
+    private static bool InstallOrUpdateService(string serviceName, string serviceExecutable, bool autoStart)
     {
         var stopped = TryStopService(serviceName);
+        var startMode = autoStart ? "auto" : "demand";
         if (ServiceExists(serviceName))
         {
-            RunProcess("sc.exe", $@"config {serviceName} binPath= ""{serviceExecutable}"" start= demand", "Failed to update the SecureVol service.");
+            RunProcess("sc.exe", $@"config {serviceName} binPath= ""{serviceExecutable}"" start= {startMode} depend= FltMgr", "Failed to update the SecureVol service.");
         }
         else
         {
             RunProcess(
                 "sc.exe",
-                $@"create {serviceName} binPath= ""{serviceExecutable}"" start= demand DisplayName= ""SecureVol Service""",
+                $@"create {serviceName} binPath= ""{serviceExecutable}"" start= {startMode} depend= FltMgr DisplayName= ""SecureVol Service""",
                 "Failed to create the SecureVol service.");
         }
 

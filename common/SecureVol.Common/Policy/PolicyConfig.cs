@@ -11,6 +11,9 @@ public sealed record PolicyConfig
     [JsonPropertyName("protectedVolume")]
     public string ProtectedVolume { get; init; } = string.Empty;
 
+    [JsonPropertyName("protectedMountPoint")]
+    public string? ProtectedMountPoint { get; init; }
+
     [JsonPropertyName("defaultExpectedUser")]
     public string? DefaultExpectedUser { get; init; }
 
@@ -18,6 +21,7 @@ public sealed record PolicyConfig
     public List<AllowRule> AllowRules { get; init; } = [];
 
     public string NormalizedProtectedVolume => NormalizeVolumeIdentifier(ProtectedVolume);
+    public string NormalizedProtectedMountPoint => NormalizeVolumeIdentifier(ProtectedMountPoint);
     public string? NormalizedDefaultUser => NormalizeUser(DefaultExpectedUser);
 
     public static PolicyConfig Load(string path)

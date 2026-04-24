@@ -201,8 +201,8 @@ public sealed record InstallerReadiness(
 public readonly record struct InstallOptions(
     string TargetRoot,
     bool EnableTestSigning,
+    bool AutoStart,
     bool CreateStartMenuShortcuts);
 
 public readonly record struct UninstallOptions(
     string TargetRoot);
-

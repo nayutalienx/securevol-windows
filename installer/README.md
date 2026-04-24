@@ -8,6 +8,7 @@ Current state:
 - It supports `check`, `plan`, `install`, `repair`, and `uninstall`.
 - `SecureVol.Installer` is now the GUI bootstrapper for end users.
 - Install and repair use versioned payload directories under `C:\Program Files\SecureVol\payloads` so a running old backend does not block the new release from being copied.
+- The GUI installer exposes `Start SecureVol backend automatically with Windows`, which maps to the setup host `--autostart` option.
 - `scripts/Build-Release.ps1` produces a portable release layout with:
   - `Install-SecureVol.cmd`
   - `Repair-SecureVol.cmd`
@@ -27,5 +28,6 @@ Current caveats:
 
 - the installer is now GUI-driven, but still intentionally small and pragmatic rather than a polished marketing-style wizard,
 - stale payload cleanup is best-effort; if Windows still holds old service files, they are left in place and can be removed after reboot,
+- the minifilter remains demand-start; the automatic backend service loads it after Windows starts instead of placing the driver directly in the boot path,
 - the bundled driver path currently assumes a test-signed driver package unless you replace it with a production-signed package,
 - a fully signed WiX/MSIX-style public installer is still the next step after this bootstrapper.

@@ -14,7 +14,7 @@ The repository is intentionally conservative:
 - protection is deny-by-default only for the configured protected volume,
 - the driver stays small and asks user mode for first-seen process decisions,
 - complex identity checks stay in user mode,
-- the default operational model is manual/demand start to avoid boot-path risk.
+- the minifilter stays demand-start, while the backend can optionally auto-start after Windows boots and load the filter outside the boot-critical path.
 
 See `docs/` for threat model, build/install steps, recovery, and testing guidance.
 See `docs/product-backlog.md` for the productization roadmap.
@@ -43,6 +43,7 @@ Important for the current preview:
 - installation must be run as Administrator; the GUI installer requests elevation,
 - if test-signing was just enabled, Windows must be rebooted and the installer run again.
 - repair/update installs backend payloads into versioned directories under `C:\Program Files\SecureVol\payloads`, so a running old service cannot block copying the new release.
+- the installer can configure the SecureVol backend to start with Windows; the backend then loads the minifilter and reapplies the saved policy automatically.
 
 ## Quick install on a new machine
 
@@ -56,6 +57,10 @@ Important for the current preview:
 ## Updating
 
 Run the newer `SecureVol.Installer.exe` as Administrator and click `Repair`. The installer writes a fresh payload directory, points the Windows service at the new backend path, updates shortcuts, and only then tries to clean old payloads. If Windows still has the old backend loaded, cleanup is skipped and the installer reports `RebootRequired: True` instead of failing.
+
+## Startup And Remount Behavior
+
+When the installer option `Start SecureVol backend automatically with Windows` is enabled, `SecureVolSvc` is configured as an automatic Windows service. The service loads `SecureVolFlt` on startup, pushes the saved policy to the driver, and keeps watching the configured mount point such as `A:\`. If the VeraCrypt container is mounted after Windows starts, the service resolves the current volume GUID for that mount point and updates the driver policy without requiring repair.
 
 ## Project status
 

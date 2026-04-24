@@ -11,6 +11,7 @@ internal sealed class InstallerForm : Form
     private readonly Label _subtitleLabel;
     private readonly Label _statusLabel;
     private readonly CheckBox _enableTestSigningCheckBox;
+    private readonly CheckBox _autoStartCheckBox;
     private readonly Button _installButton;
     private readonly Button _repairButton;
     private readonly Button _uninstallButton;
@@ -106,9 +107,20 @@ internal sealed class InstallerForm : Form
             AutoSize = true,
             Text = "Enable Windows test-signing automatically if needed",
             Checked = true,
-            Margin = new Padding(0, 0, 0, 10)
+            Margin = new Padding(0, 0, 0, 6)
         };
         controlsPanel.Controls.Add(_enableTestSigningCheckBox, 0, 0);
+
+        _autoStartCheckBox = new CheckBox
+        {
+            AutoSize = true,
+            Text = "Start SecureVol backend automatically with Windows",
+            Checked = true,
+            Margin = new Padding(0, 0, 0, 10)
+        };
+        controlsPanel.RowCount = 3;
+        controlsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        controlsPanel.Controls.Add(_autoStartCheckBox, 0, 1);
 
         var actionsPanel = new FlowLayoutPanel
         {
@@ -119,7 +131,7 @@ internal sealed class InstallerForm : Form
             FlowDirection = FlowDirection.LeftToRight,
             Margin = new Padding(0)
         };
-        controlsPanel.Controls.Add(actionsPanel, 0, 1);
+        controlsPanel.Controls.Add(actionsPanel, 0, 2);
 
         _installButton = CreateActionButton("Install", async (_, _) => await RunSetupActionAsync("install"));
         _repairButton = CreateActionButton("Repair", async (_, _) => await RunSetupActionAsync("repair"));
@@ -257,6 +269,11 @@ internal sealed class InstallerForm : Form
             if ((action == "install" || action == "repair") && _enableTestSigningCheckBox.Checked)
             {
                 arguments.Add("--enable-testsigning");
+            }
+
+            if ((action == "install" || action == "repair") && _autoStartCheckBox.Checked)
+            {
+                arguments.Add("--autostart");
             }
 
             var exitCode = await RunProcessAsync(setupHost, arguments, Path.GetDirectoryName(setupHost)!);

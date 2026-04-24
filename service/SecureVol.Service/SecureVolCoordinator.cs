@@ -73,6 +73,53 @@ public sealed class SecureVolCoordinator
         return ReloadPolicyAsync(pushToDriver: true, cancellationToken);
     }
 
+    public async Task RefreshProtectedMountPointAsync(CancellationToken cancellationToken)
+    {
+        PolicyConfig policy;
+        uint generation;
+        bool changed = false;
+
+        await _policyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var resolvedPolicy = ResolveProtectedMountPoint(_policy);
+            if (!string.Equals(resolvedPolicy.NormalizedProtectedVolume, _policy.NormalizedProtectedVolume, StringComparison.OrdinalIgnoreCase))
+            {
+                _policy = resolvedPolicy;
+                _policyGeneration++;
+                _policyEngine.ClearCache();
+                _policy.Save(AppPaths.PolicyFilePath);
+                changed = true;
+            }
+
+            policy = _policy;
+            generation = _policyGeneration;
+        }
+        finally
+        {
+            _policyGate.Release();
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        await PushPolicyToDriverAsync(cancellationToken).ConfigureAwait(false);
+        await _fileLogger.WriteAsync(new
+        {
+            ts = DateTimeOffset.UtcNow,
+            level = "info",
+            evt = "protected-mount-resolved",
+            generation,
+            protectedMountPoint = policy.NormalizedProtectedMountPoint,
+            protectedVolume = policy.NormalizedProtectedVolume
+        }, cancellationToken).ConfigureAwait(false);
+
+        _eventLogger.Info($"SecureVol protected mount point resolved. Mount='{policy.NormalizedProtectedMountPoint}', Volume='{policy.NormalizedProtectedVolume}'.");
+        WriteStatusSnapshot();
+    }
+
     public async Task PushPolicyToDriverAsync(CancellationToken cancellationToken)
     {
         PolicyConfig policy;
@@ -172,7 +219,14 @@ public sealed class SecureVolCoordinator
         await _policyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _policy = PolicyConfig.Load(AppPaths.PolicyFilePath);
+            var loadedPolicy = PolicyConfig.Load(AppPaths.PolicyFilePath);
+            var resolvedPolicy = ResolveProtectedMountPoint(loadedPolicy);
+            if (!string.Equals(resolvedPolicy.NormalizedProtectedVolume, loadedPolicy.NormalizedProtectedVolume, StringComparison.OrdinalIgnoreCase))
+            {
+                resolvedPolicy.Save(AppPaths.PolicyFilePath);
+            }
+
+            _policy = resolvedPolicy;
             _policyGeneration++;
             _policyEngine.ClearCache();
         }
@@ -285,12 +339,13 @@ public sealed class SecureVolCoordinator
         await _policyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _policy = new PolicyConfig
+            var normalizedMountPoint = PolicyConfig.NormalizeVolumeIdentifier(volume);
+            var mountPoint = IsDriveRoot(normalizedMountPoint) ? normalizedMountPoint : null;
+
+            _policy = _policy with
             {
-                ProtectionEnabled = _policy.ProtectionEnabled,
                 ProtectedVolume = VolumeHelpers.ResolveVolumeGuid(volume),
-                DefaultExpectedUser = _policy.DefaultExpectedUser,
-                AllowRules = [.. _policy.AllowRules]
+                ProtectedMountPoint = mountPoint
             };
 
             _policy.Save(AppPaths.PolicyFilePath);
@@ -313,12 +368,9 @@ public sealed class SecureVolCoordinator
         await _policyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _policy = new PolicyConfig
+            _policy = _policy with
             {
-                ProtectionEnabled = protectionEnabled.Value,
-                ProtectedVolume = _policy.ProtectedVolume,
-                DefaultExpectedUser = _policy.DefaultExpectedUser,
-                AllowRules = [.. _policy.AllowRules]
+                ProtectionEnabled = protectionEnabled.Value
             };
 
             _policy.Save(AppPaths.PolicyFilePath);
@@ -336,12 +388,9 @@ public sealed class SecureVolCoordinator
         await _policyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _policy = new PolicyConfig
+            _policy = _policy with
             {
-                ProtectionEnabled = _policy.ProtectionEnabled,
-                ProtectedVolume = _policy.ProtectedVolume,
-                DefaultExpectedUser = PolicyConfig.NormalizeUser(defaultExpectedUser),
-                AllowRules = [.. _policy.AllowRules]
+                DefaultExpectedUser = PolicyConfig.NormalizeUser(defaultExpectedUser)
             };
 
             _policy.Save(AppPaths.PolicyFilePath);
@@ -375,11 +424,8 @@ public sealed class SecureVolCoordinator
                 ExpectedUser = PolicyConfig.NormalizeUser(rule.ExpectedUser)
             });
 
-            _policy = new PolicyConfig
+            _policy = _policy with
             {
-                ProtectionEnabled = _policy.ProtectionEnabled,
-                ProtectedVolume = _policy.ProtectedVolume,
-                DefaultExpectedUser = _policy.DefaultExpectedUser,
                 AllowRules = updatedRules
             };
 
@@ -407,11 +453,8 @@ public sealed class SecureVolCoordinator
                 .Where(rule => !string.Equals(rule.Name, ruleName, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-            _policy = new PolicyConfig
+            _policy = _policy with
             {
-                ProtectionEnabled = _policy.ProtectionEnabled,
-                ProtectedVolume = _policy.ProtectedVolume,
-                DefaultExpectedUser = _policy.DefaultExpectedUser,
                 AllowRules = updatedRules
             };
 
@@ -475,6 +518,31 @@ public sealed class SecureVolCoordinator
         while (_recentDenies.Count > MaxRecentDenyEvents && _recentDenies.TryDequeue(out _)) {
         }
     }
+
+    private PolicyConfig ResolveProtectedMountPoint(PolicyConfig policy)
+    {
+        var mountPoint = policy.NormalizedProtectedMountPoint;
+        if (!IsDriveRoot(mountPoint) || !Directory.Exists(mountPoint))
+        {
+            return policy;
+        }
+
+        try
+        {
+            var currentVolume = VolumeHelpers.ResolveVolumeGuid(mountPoint);
+            return string.IsNullOrWhiteSpace(currentVolume)
+                ? policy
+                : policy with { ProtectedVolume = currentVolume };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Protected mount point '{MountPoint}' is not resolvable yet.", mountPoint);
+            return policy;
+        }
+    }
+
+    private static bool IsDriveRoot(string value) =>
+        value.Length == 3 && value[1] == ':' && value[2] == '\\';
 
     private static ProcessReplyMessage BuildReply(uint generation, AccessVerdict verdict, DecisionReason reason, string imagePath) =>
         new()

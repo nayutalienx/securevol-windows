@@ -6,9 +6,11 @@ namespace SecureVol.Service;
 
 public sealed class SecureVolWorker : BackgroundService
 {
+    private const int HResultServiceAlreadyRunning = unchecked((int)0x80070420);
     private readonly SecureVolCoordinator _coordinator;
     private readonly ILogger<SecureVolWorker> _logger;
     private readonly WindowsEventLogger _eventLogger;
+    private DateTimeOffset _lastFilterLoadFailureLog = DateTimeOffset.MinValue;
 
     public SecureVolWorker(
         SecureVolCoordinator coordinator,
@@ -29,6 +31,12 @@ public sealed class SecureVolWorker : BackgroundService
             FilterPortConnection? connection = null;
             try
             {
+                if (!TryEnsureFilterLoaded())
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 connection = FilterPortConnection.ConnectQuery((uint)Environment.ProcessId);
                 _coordinator.AttachDriver(connection);
                 await _coordinator.PushPolicyToDriverAsync(stoppingToken).ConfigureAwait(false);
@@ -62,5 +70,24 @@ public sealed class SecureVolWorker : BackgroundService
                 }
             }
         }
+    }
+
+    private bool TryEnsureFilterLoaded()
+    {
+        var result = NativeMethods.FilterLoad("SecureVolFlt");
+        if (result == 0 || result == HResultServiceAlreadyRunning)
+        {
+            return true;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastFilterLoadFailureLog > TimeSpan.FromSeconds(30))
+        {
+            _lastFilterLoadFailureLog = now;
+            _logger.LogWarning("SecureVolFlt could not be loaded yet. HRESULT=0x{Result:X8}", result);
+            _eventLogger.Error($"SecureVolFlt could not be loaded yet. HRESULT=0x{result:X8}");
+        }
+
+        return false;
     }
 }

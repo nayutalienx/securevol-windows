@@ -48,7 +48,7 @@ internal static class Program
         Console.WriteLine($"ArtifactsReady      : {readiness.HasAllArtifacts}");
         Console.WriteLine();
         Console.WriteLine("Use:");
-        Console.WriteLine("  SecureVol.SetupHost install --enable-testsigning");
+        Console.WriteLine("  SecureVol.SetupHost install --enable-testsigning --autostart");
         Console.WriteLine("  SecureVol.SetupHost uninstall");
 
         return readiness.HasAllArtifacts ? 0 : 1;
@@ -75,6 +75,7 @@ internal static class Program
         var options = new InstallOptions(
             GetOption(args, "--target-root") ?? plan.DefaultInstallRoot,
             HasFlag(args, "--enable-testsigning"),
+            HasFlag(args, "--autostart"),
             !HasFlag(args, "--no-start-menu-shortcuts"));
 
         return InstallerEngine.Install(plan, options);
@@ -105,7 +106,7 @@ Commands:
   plan
       Print the resolved payload/install plan as JSON.
 
-  install [--target-root "C:\Program Files\SecureVol"] [--enable-testsigning] [--no-start-menu-shortcuts]
+  install [--target-root "C:\Program Files\SecureVol"] [--enable-testsigning] [--autostart] [--no-start-menu-shortcuts]
       Copy the packaged payload into Program Files, install/update the service and driver,
       start the backend, and create the SecureVol Admin shortcut.
 
@@ -128,4 +129,3 @@ Commands:
     private static bool HasFlag(string[] args, string name) =>
         args.Any(arg => string.Equals(arg, name, StringComparison.OrdinalIgnoreCase));
 }
-

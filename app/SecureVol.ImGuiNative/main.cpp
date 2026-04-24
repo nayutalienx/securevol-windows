@@ -790,23 +790,17 @@ static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapsho
 
     std::vector<std::string> actions{ "policy saved locally" };
 
-    std::string reloadError;
-    JsonObject reloadRequest;
-    reloadRequest.Insert(L"command", JsonValue::CreateStringValue(L"reload"));
-    if (auto reloadResponse = TryAdminCommand(reloadRequest, reloadError, 2500))
+    if (QueryServiceStatusText(L"SecureVolSvc") != "Running")
     {
-        if (JsonBool(*reloadResponse, L"success", false))
+        std::string startError;
+        if (TryRunProcess(L"sc.exe", L"start SecureVolSvc", 2500, startError, { 0, 1056 }))
         {
-            actions.push_back("service reload requested");
+            actions.push_back("service start requested");
         }
-        else
+        else if (!startError.empty())
         {
-            actions.push_back("service reload rejected (" + JsonString(*reloadResponse, L"message", "unknown") + ")");
+            actions.push_back("service start pending (" + startError + ")");
         }
-    }
-    else if (!reloadError.empty())
-    {
-        actions.push_back("service reload pending (" + reloadError + ")");
     }
 
     if (enabled && QueryServiceStatusText(L"SecureVolFlt") != "Running")
@@ -822,19 +816,7 @@ static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapsho
         }
     }
 
-    auto confirmed = WaitForServiceStatusConfirmation(enabled, 4000);
-    if (auto refresh = RefreshDashboard(); refresh.HasSnapshot && refresh.Success)
-    {
-        if (refresh.Snapshot.ProtectionEnabled == enabled)
-        {
-            refresh.Message = enabled
-                ? "Protection enabled. " + JoinCsv(actions)
-                : "Protection paused. " + JoinCsv(actions);
-            return refresh;
-        }
-
-        actions.push_back("live dashboard is stale");
-    }
+    auto confirmed = WaitForServiceStatusConfirmation(enabled, 2500);
 
     auto snapshot = LoadLocalSnapshot();
     snapshot.BackendLabel = "cached";
@@ -1249,7 +1231,7 @@ static void DrawHeader(AppState& state)
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("SecureVol");
         ImGui::SameLine();
-        ImGui::TextDisabled("compact-main v7");
+        ImGui::TextDisabled("compact-main v8");
         ImGui::TextDisabled("backend: %s", state.Snapshot.BackendLabel.c_str());
         DrawEllipsizedText(state.StatusLine, 44, true);
 
@@ -1665,7 +1647,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandleW(nullptr), nullptr, nullptr, nullptr, nullptr, L"SecureVolImGuiNative", nullptr };
     ::RegisterClassExW(&wc);
-    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"SecureVol CompactMain v7", WS_OVERLAPPEDWINDOW, 80, 80, static_cast<int>(760 * mainScale), static_cast<int>(560 * mainScale), nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"SecureVol CompactMain v8", WS_OVERLAPPEDWINDOW, 80, 80, static_cast<int>(760 * mainScale), static_cast<int>(560 * mainScale), nullptr, nullptr, wc.hInstance, nullptr);
 
     if (!CreateDeviceD3D(hwnd))
     {
