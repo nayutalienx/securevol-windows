@@ -135,15 +135,25 @@ SecureVolUnload(
     _In_ FLT_FILTER_UNLOAD_FLAGS Flags
     )
 {
+    PFLT_PORT clientPort = NULL;
+
     UNREFERENCED_PARAMETER(Flags);
+
+    ExAcquirePushLockExclusive(&Globals.PolicyLock);
+    Globals.ProtectionEnabled = FALSE;
+    Globals.Unloading = TRUE;
+    clientPort = Globals.ClientPort;
+    Globals.ClientPort = NULL;
+    Globals.ServiceProcessId = NULL;
+    ExReleasePushLockExclusive(&Globals.PolicyLock);
 
     if (Globals.ServerPort != NULL) {
         FltCloseCommunicationPort(Globals.ServerPort);
         Globals.ServerPort = NULL;
     }
 
-    if (Globals.ClientPort != NULL) {
-        FltCloseClientPort(Globals.Filter, &Globals.ClientPort);
+    if (clientPort != NULL) {
+        FltCloseClientPort(Globals.Filter, &clientPort);
     }
 
     SecureVolCacheFlush();
@@ -279,6 +289,7 @@ SecureVolPortDisconnect(
     )
 {
     PSECUREVOL_PORT_CONTEXT portContext = (PSECUREVOL_PORT_CONTEXT)ConnectionCookie;
+    PFLT_PORT portToClose = NULL;
 
     if (portContext == NULL) {
         return;
@@ -287,12 +298,18 @@ SecureVolPortDisconnect(
     ExAcquirePushLockExclusive(&Globals.PolicyLock);
     if (portContext->IsQueryPort && Globals.ClientPort == portContext->ClientPort) {
         Globals.ServiceProcessId = NULL;
-        FltCloseClientPort(Globals.Filter, &Globals.ClientPort);
+        Globals.ClientPort = NULL;
     }
-    else if (portContext->ClientPort != NULL) {
-        FltCloseClientPort(Globals.Filter, &portContext->ClientPort);
+
+    if (!Globals.Unloading && portContext->ClientPort != NULL) {
+        portToClose = portContext->ClientPort;
+        portContext->ClientPort = NULL;
     }
     ExReleasePushLockExclusive(&Globals.PolicyLock);
+
+    if (portToClose != NULL) {
+        FltCloseClientPort(Globals.Filter, &portToClose);
+    }
 
     ExFreePoolWithTag(portContext, SECUREVOL_TAG);
 }

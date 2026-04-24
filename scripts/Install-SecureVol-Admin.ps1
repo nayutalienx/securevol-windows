@@ -470,18 +470,8 @@ function Stop-FilterIfRunning {
         return
     }
 
-    Write-Step 'Unloading running SecureVol minifilter'
-    $output = & fltmc.exe unload SecureVolFlt 2>&1 | Out-String
-    if ($LASTEXITCODE -eq 0) {
-        return
-    }
-
-    $service = Get-Service -Name 'SecureVolFlt' -ErrorAction SilentlyContinue
-    if ($null -eq $service -or $service.Status -ne 'Running') {
-        return
-    }
-
-    throw "fltmc unload SecureVolFlt failed. $output"
+    Write-Step 'SecureVolFlt is already loaded; skipping live minifilter unload for safety'
+    Write-Warning 'Driver replacement/removal is deferred until reboot. Do not live-unload the SecureVol minifilter from this script.'
 }
 
 function Install-DriverFromPackage {

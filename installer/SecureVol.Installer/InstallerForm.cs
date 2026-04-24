@@ -268,10 +268,10 @@ internal sealed class InstallerForm : Form
             var logContent = File.Exists(_currentLogPath) ? await File.ReadAllTextAsync(_currentLogPath) : string.Empty;
             if (logContent.Contains("RebootRequired   : True", StringComparison.OrdinalIgnoreCase))
             {
-                SetStatus("Reboot required. Run the installer again after Windows restarts.", Color.DarkGoldenrod);
+                SetStatus("Reboot required to finish the operation safely.", Color.DarkGoldenrod);
                 MessageBox.Show(
                     this,
-                    "Windows test-signing was enabled for the packaged test-signed driver. Reboot Windows and run the installer again.",
+                    "SecureVol completed the requested operation, but Windows must be rebooted to finish driver load/unload changes safely.",
                     "SecureVol Installer",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);

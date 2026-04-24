@@ -48,6 +48,7 @@ typedef struct _SECUREVOL_GLOBALS {
     EX_PUSH_LOCK CacheLock;
     EX_PUSH_LOCK DenyLock;
     BOOLEAN ProtectionEnabled;
+    BOOLEAN Unloading;
     ULONG PolicyGeneration;
     ULONG CacheEntryCount;
     HANDLE ServiceProcessId;

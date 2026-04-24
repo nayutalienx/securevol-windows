@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using Microsoft.Win32;
@@ -10,6 +11,12 @@ namespace SecureVol.SetupHost;
 
 internal static class InstallerEngine
 {
+    private const int MoveFileReplaceExisting = 0x1;
+    private const int MoveFileDelayUntilReboot = 0x4;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool MoveFileEx(string lpExistingFileName, string? lpNewFileName, int dwFlags);
+
     public static bool EnsureElevatedOrRelaunch(string[] args)
     {
         if (IsElevated())
@@ -67,8 +74,14 @@ internal static class InstallerEngine
             enableTestSigning: options.EnableTestSigning);
 
         InstallOrUpdateService(plan.ServiceName, installLayout.ServiceExecutable);
-        InstallOrUpdateDriver(installLayout.DriverInfPath, installLayout.DriverRoot, plan.DriverServiceName);
+        var driverUpdateDeferred = InstallOrUpdateDriver(installLayout.DriverInfPath, installLayout.DriverRoot, plan.DriverServiceName);
         StartService(plan.ServiceName);
+
+        if (driverUpdateDeferred)
+        {
+            rebootRequired = true;
+            Console.WriteLine("[SecureVol] Driver update is deferred until reboot because the minifilter is already loaded.");
+        }
 
         if (!rebootRequired &&
             !TryEnsureFilterLoaded(
@@ -111,7 +124,11 @@ internal static class InstallerEngine
         // Existing installs may have a running service, an orphaned worker, or an open UI process
         // loaded from the current install root. Clear those first so in-place payload replacement works.
         TryStopService(serviceName);
-        TryUnloadFilter(driverServiceName);
+        if (IsServiceRunning(driverServiceName))
+        {
+            Console.WriteLine("[SecureVol] Existing minifilter is loaded; repair will leave the live driver in place until reboot.");
+        }
+
         TerminateProcessesUnderPath(targetRoot, TimeSpan.FromSeconds(15));
     }
 
@@ -122,12 +139,25 @@ internal static class InstallerEngine
 
         Console.WriteLine($"[SecureVol] Uninstalling from '{targetRoot}'");
 
-        TryUnloadFilter(plan.DriverServiceName);
+        DisableProtectionForRemoval();
         TryStopService(plan.ServiceName);
 
         TryDeleteService(plan.ServiceName);
-        TryDeleteService(plan.DriverServiceName);
-        TryDeleteInstalledDriverBinary(plan.DriverServiceName);
+
+        var driverStillRunning = IsServiceRunning(plan.DriverServiceName);
+        if (driverStillRunning)
+        {
+            Console.WriteLine("[SecureVol] SecureVolFlt is still loaded. Skipping live driver unload for system safety.");
+            Console.WriteLine("[SecureVol] Driver service and SecureVolFlt.sys removal are deferred until after reboot.");
+            TryDisableDriverAutostart(plan.DriverServiceName);
+            TryDeleteInstalledDriverBinary(plan.DriverServiceName);
+        }
+        else
+        {
+            TryDeleteService(plan.DriverServiceName);
+            TryDeleteInstalledDriverBinary(plan.DriverServiceName);
+        }
+
         RemoveShortcuts(plan.StartMenuFolderName);
 
         TryDeleteDirectory(installLayout.AppRoot);
@@ -153,7 +183,13 @@ internal static class InstallerEngine
         Console.WriteLine("[SecureVol] Uninstall summary");
         Console.WriteLine($"InstallRoot        : {targetRoot}");
         Console.WriteLine($"ServiceStillExists : {ServiceExists(plan.ServiceName)}");
-        Console.WriteLine($"DriverStillRunning : {IsServiceRunning(plan.DriverServiceName)}");
+        Console.WriteLine($"DriverStillRunning : {driverStillRunning}");
+        Console.WriteLine($"RebootRequired   : {driverStillRunning}");
+        if (driverStillRunning)
+        {
+            Console.WriteLine("NextStep           : Reboot Windows to finish unloading SecureVolFlt safely.");
+        }
+
         Console.WriteLine("ProgramDataKept    : True");
 
         return 0;
@@ -236,6 +272,48 @@ internal static class InstallerEngine
         return null;
     }
 
+    private static void DisableProtectionForRemoval()
+    {
+        try
+        {
+            AppPaths.EnsureDefaultAcls();
+            var policy = File.Exists(AppPaths.PolicyFilePath)
+                ? PolicyConfig.Load(AppPaths.PolicyFilePath)
+                : new PolicyConfig();
+
+            if (policy.ProtectionEnabled)
+            {
+                (policy with { ProtectionEnabled = false }).Save(AppPaths.PolicyFilePath);
+                Console.WriteLine("[SecureVol] Policy file updated: protection disabled before removal.");
+            }
+            else
+            {
+                Console.WriteLine("[SecureVol] Policy file already has protection disabled.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SecureVol] Policy-disable warning: {ex.Message}");
+        }
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+            var response = new AdminPipeClient()
+                .SendAsync(new AdminRequest { Command = "set-protection", ProtectionEnabled = false }, cts.Token)
+                .GetAwaiter()
+                .GetResult();
+
+            Console.WriteLine(response.Success
+                ? "[SecureVol] Live driver policy disabled through SecureVolSvc."
+                : $"[SecureVol] Live policy-disable warning: {response.Message}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SecureVol] Live policy-disable warning: {ex.Message}");
+        }
+    }
+
     private static void ImportDriverCertificateIfPresent(string? certificatePath)
     {
         if (string.IsNullOrWhiteSpace(certificatePath) || !File.Exists(certificatePath))
@@ -304,7 +382,7 @@ internal static class InstallerEngine
         }
     }
 
-    private static void InstallOrUpdateDriver(string driverInfPath, string driverPackageRoot, string driverServiceName)
+    private static bool InstallOrUpdateDriver(string driverInfPath, string driverPackageRoot, string driverServiceName)
     {
         var packagedDriverBinary = Path.Combine(driverPackageRoot, "SecureVolFlt.sys");
         var installedDriverBinary = Path.Combine(Environment.SystemDirectory, "drivers", "SecureVolFlt.sys");
@@ -316,11 +394,40 @@ internal static class InstallerEngine
 
         TryStageDriverPackage(driverInfPath);
 
+        if (IsServiceRunning(driverServiceName) && File.Exists(installedDriverBinary))
+        {
+            Console.WriteLine("[SecureVol] SecureVolFlt is already loaded. Skipping live driver binary replacement.");
+            ScheduleDriverReplacementOnReboot(packagedDriverBinary, installedDriverBinary);
+            EnsureMinifilterServiceRegistration(driverServiceName, installedDriverBinary);
+            return true;
+        }
+
         Console.WriteLine($"[SecureVol] Copying driver binary to '{installedDriverBinary}'.");
         Directory.CreateDirectory(Path.GetDirectoryName(installedDriverBinary)!);
         CopyFileWithRetry(packagedDriverBinary, installedDriverBinary, TimeSpan.FromSeconds(10));
 
         EnsureMinifilterServiceRegistration(driverServiceName, installedDriverBinary);
+        return false;
+    }
+
+    private static void ScheduleDriverReplacementOnReboot(string sourceDriverBinary, string installedDriverBinary)
+    {
+        var pendingRoot = Path.Combine(AppPaths.ProgramDataRoot, "pending");
+        Directory.CreateDirectory(pendingRoot);
+
+        var pendingDriverBinary = Path.Combine(pendingRoot, "SecureVolFlt.sys");
+        File.Copy(sourceDriverBinary, pendingDriverBinary, overwrite: true);
+
+        if (!MoveFileEx(
+                pendingDriverBinary,
+                installedDriverBinary,
+                MoveFileDelayUntilReboot | MoveFileReplaceExisting))
+        {
+            throw new InvalidOperationException(
+                $"Failed to schedule SecureVolFlt.sys replacement at reboot. Win32={Marshal.GetLastWin32Error()}");
+        }
+
+        Console.WriteLine($"[SecureVol] Scheduled SecureVolFlt.sys replacement at next reboot from '{pendingDriverBinary}'.");
     }
 
     private static void TryStageDriverPackage(string driverInfPath)
@@ -501,19 +608,6 @@ internal static class InstallerEngine
                output.Contains("Windows cannot verify the digital signature", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void TryUnloadFilter(string driverServiceName)
-    {
-        var output = RunProcessCapture("fltmc.exe", $"unload {driverServiceName}", allowNonZeroExit: true, out var exitCode);
-        if (exitCode == 0 ||
-            output.Contains("not found", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("is not currently loaded", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        Console.WriteLine($"[SecureVol] Filter unload warning: {output}".Trim());
-    }
-
     private static void TryDeleteService(string serviceName)
     {
         if (!ServiceExists(serviceName))
@@ -530,14 +624,28 @@ internal static class InstallerEngine
         Console.WriteLine($"[SecureVol] Service delete warning: {output}".Trim());
     }
 
-    private static void TryDeleteInstalledDriverBinary(string driverServiceName)
+    private static void TryDisableDriverAutostart(string driverServiceName)
     {
-        if (IsServiceRunning(driverServiceName))
+        if (!ServiceExists(driverServiceName))
         {
-            Console.WriteLine("[SecureVol] Keeping SecureVolFlt.sys because the minifilter is still loaded.");
             return;
         }
 
+        try
+        {
+            RunProcess(
+                "sc.exe",
+                $@"config {driverServiceName} start= demand",
+                "Failed to keep the SecureVol minifilter service on demand start.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SecureVol] Driver autostart cleanup warning: {ex.Message}");
+        }
+    }
+
+    private static void TryDeleteInstalledDriverBinary(string driverServiceName)
+    {
         var installedDriverBinary = Path.Combine(Environment.SystemDirectory, "drivers", "SecureVolFlt.sys");
         if (!File.Exists(installedDriverBinary))
         {
@@ -546,8 +654,21 @@ internal static class InstallerEngine
 
         try
         {
-            File.Delete(installedDriverBinary);
-            Console.WriteLine($"[SecureVol] Removed '{installedDriverBinary}'.");
+            if (IsServiceRunning(driverServiceName))
+            {
+                if (!MoveFileEx(installedDriverBinary, null, MoveFileDelayUntilReboot))
+                {
+                    throw new InvalidOperationException(
+                        $"MoveFileEx delete scheduling failed. Win32={Marshal.GetLastWin32Error()}");
+                }
+
+                Console.WriteLine($"[SecureVol] Scheduled '{installedDriverBinary}' for removal at next reboot.");
+            }
+            else
+            {
+                File.Delete(installedDriverBinary);
+                Console.WriteLine($"[SecureVol] Removed '{installedDriverBinary}'.");
+            }
         }
         catch (Exception ex)
         {
