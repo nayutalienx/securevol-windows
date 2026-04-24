@@ -106,7 +106,7 @@ DriverEntry(
         SecureVolPortConnect,
         SecureVolPortDisconnect,
         SecureVolPortMessage,
-        1);
+        SECUREVOL_MAX_PORT_CONNECTIONS);
 
     FltFreeSecurityDescriptor(securityDescriptor);
     securityDescriptor = NULL;
@@ -214,21 +214,60 @@ SecureVolPortConnect(
     _Outptr_result_maybenull_ PVOID *ConnectionPortCookie
     )
 {
+    PSECUREVOL_PORT_CONTEXT portContext;
+    ULONG role = SECUREVOL_PORT_ROLE_QUERY;
+    ULONG serviceProcessId = 0;
+
     UNREFERENCED_PARAMETER(ServerPortCookie);
-    UNREFERENCED_PARAMETER(ConnectionPortCookie);
+
+    if (ConnectionPortCookie == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *ConnectionPortCookie = NULL;
+
+    if (ConnectionContext != NULL && SizeOfContext >= sizeof(SECUREVOL_CONNECTION_CONTEXT)) {
+        PSECUREVOL_CONNECTION_CONTEXT connectionContext = (PSECUREVOL_CONNECTION_CONTEXT)ConnectionContext;
+        serviceProcessId = connectionContext->ServiceProcessId;
+        role = connectionContext->Role;
+    }
+    else if (ConnectionContext != NULL && SizeOfContext >= sizeof(ULONG)) {
+        serviceProcessId = *(PULONG)ConnectionContext;
+        role = SECUREVOL_PORT_ROLE_QUERY;
+    }
+
+    if (role != SECUREVOL_PORT_ROLE_QUERY && role != SECUREVOL_PORT_ROLE_CONTROL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    portContext = (PSECUREVOL_PORT_CONTEXT)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        sizeof(SECUREVOL_PORT_CONTEXT),
+        SECUREVOL_TAG);
+
+    if (portContext == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    RtlZeroMemory(portContext, sizeof(*portContext));
+    portContext->ClientPort = ClientPort;
+    portContext->IsQueryPort = (role == SECUREVOL_PORT_ROLE_QUERY);
+
+    if (role == SECUREVOL_PORT_ROLE_CONTROL) {
+        *ConnectionPortCookie = portContext;
+        return STATUS_SUCCESS;
+    }
 
     ExAcquirePushLockExclusive(&Globals.PolicyLock);
     if (Globals.ClientPort != NULL) {
         ExReleasePushLockExclusive(&Globals.PolicyLock);
+        ExFreePoolWithTag(portContext, SECUREVOL_TAG);
         return STATUS_CONNECTION_ACTIVE;
     }
 
     Globals.ClientPort = ClientPort;
-    Globals.ServiceProcessId = NULL;
-
-    if (ConnectionContext != NULL && SizeOfContext >= sizeof(ULONG)) {
-        Globals.ServiceProcessId = UlongToHandle(*(PULONG)ConnectionContext);
-    }
+    Globals.ServiceProcessId = serviceProcessId != 0 ? UlongToHandle(serviceProcessId) : NULL;
+    *ConnectionPortCookie = portContext;
 
     ExReleasePushLockExclusive(&Globals.PolicyLock);
     return STATUS_SUCCESS;
@@ -239,14 +278,23 @@ SecureVolPortDisconnect(
     _In_opt_ PVOID ConnectionCookie
     )
 {
-    UNREFERENCED_PARAMETER(ConnectionCookie);
+    PSECUREVOL_PORT_CONTEXT portContext = (PSECUREVOL_PORT_CONTEXT)ConnectionCookie;
+
+    if (portContext == NULL) {
+        return;
+    }
 
     ExAcquirePushLockExclusive(&Globals.PolicyLock);
-    Globals.ServiceProcessId = NULL;
-    if (Globals.ClientPort != NULL) {
+    if (portContext->IsQueryPort && Globals.ClientPort == portContext->ClientPort) {
+        Globals.ServiceProcessId = NULL;
         FltCloseClientPort(Globals.Filter, &Globals.ClientPort);
     }
+    else if (portContext->ClientPort != NULL) {
+        FltCloseClientPort(Globals.Filter, &portContext->ClientPort);
+    }
     ExReleasePushLockExclusive(&Globals.PolicyLock);
+
+    ExFreePoolWithTag(portContext, SECUREVOL_TAG);
 }
 
 NTSTATUS

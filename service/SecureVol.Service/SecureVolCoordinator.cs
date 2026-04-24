@@ -75,29 +75,35 @@ public sealed class SecureVolCoordinator
 
     public async Task PushPolicyToDriverAsync(CancellationToken cancellationToken)
     {
-        FilterPortConnection? driver;
         PolicyConfig policy;
         uint generation;
+        bool queryConnectionReady;
 
         await _policyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            driver = _driverConnection;
             policy = _policy;
             generation = _policyGeneration;
+            queryConnectionReady = _driverConnection is not null;
         }
         finally
         {
             _policyGate.Release();
         }
 
-        if (driver is null)
+        if (!queryConnectionReady)
         {
             WriteStatusSnapshot();
             return;
         }
 
-        driver.SetPolicy(policy.ProtectionEnabled, generation, policy.NormalizedProtectedVolume);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // The worker owns a long-lived query connection that blocks in FilterGetMessage.
+        // Control messages must use a separate short-lived filter port connection, otherwise
+        // admin commands can deadlock behind the receive loop.
+        using var controlConnection = FilterPortConnection.ConnectControl((uint)Environment.ProcessId);
+        controlConnection.SetPolicy(policy.ProtectionEnabled, generation, policy.NormalizedProtectedVolume);
         WriteStatusSnapshot();
     }
 

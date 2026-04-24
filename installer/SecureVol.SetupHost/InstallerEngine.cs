@@ -374,21 +374,19 @@ internal static class InstallerEngine
         }
 
         var state = GetServiceState(serviceName);
-        if (state is "STOPPED" or "STOP_PENDING")
+        if (state == "STOPPED")
         {
-            if (state == "STOP_PENDING")
-            {
-                WaitForServiceState(serviceName, "STOPPED", TimeSpan.FromSeconds(20));
-            }
-
             return;
         }
 
-        var output = RunProcessCapture("sc.exe", $"stop {serviceName}", allowNonZeroExit: true, out var exitCode);
-        if (exitCode != 0 &&
-            !output.Contains("service has not been started", StringComparison.OrdinalIgnoreCase))
+        if (state != "STOP_PENDING")
         {
-            throw new InvalidOperationException($"Failed to stop the SecureVol service. {output}".Trim());
+            var output = RunProcessCapture("sc.exe", $"stop {serviceName}", allowNonZeroExit: true, out var exitCode);
+            if (exitCode != 0 &&
+                !output.Contains("service has not been started", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Failed to stop the SecureVol service. {output}".Trim());
+            }
         }
 
         if (TryWaitForServiceState(serviceName, "STOPPED", TimeSpan.FromSeconds(20)))
@@ -396,28 +394,35 @@ internal static class InstallerEngine
             return;
         }
 
-        var serviceProcessId = GetServiceProcessId(serviceName);
-        if (serviceProcessId.HasValue && serviceProcessId.Value > 0)
-        {
-            try
-            {
-                using var process = Process.GetProcessById(serviceProcessId.Value);
-                Console.WriteLine($"[SecureVol] Forcing hung service '{serviceName}' to exit via PID {serviceProcessId.Value}.");
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                    process.WaitForExit(5000);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[SecureVol] Forced service-stop warning for '{serviceName}': {ex.Message}");
-            }
-        }
+        ForceStopServiceProcess(serviceName);
 
         if (!TryWaitForServiceState(serviceName, "STOPPED", TimeSpan.FromSeconds(10)))
         {
             throw new InvalidOperationException($"Timed out waiting for service '{serviceName}' to reach state 'STOPPED'.");
+        }
+    }
+
+    private static void ForceStopServiceProcess(string serviceName)
+    {
+        var serviceProcessId = GetServiceProcessId(serviceName);
+        if (!serviceProcessId.HasValue || serviceProcessId.Value <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(serviceProcessId.Value);
+            Console.WriteLine($"[SecureVol] Forcing hung service '{serviceName}' to exit via PID {serviceProcessId.Value}.");
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SecureVol] Forced service-stop warning for '{serviceName}': {ex.Message}");
         }
     }
 

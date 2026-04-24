@@ -13,11 +13,26 @@ public sealed class FilterPortConnection : IDisposable
         _handle = handle;
     }
 
-    public static FilterPortConnection Connect(uint serviceProcessId)
+    public static FilterPortConnection Connect(uint serviceProcessId) => ConnectQuery(serviceProcessId);
+
+    public static FilterPortConnection ConnectQuery(uint serviceProcessId) =>
+        Connect(serviceProcessId, FilterPortConnectionRole.Query);
+
+    public static FilterPortConnection ConnectControl(uint serviceProcessId) =>
+        Connect(serviceProcessId, FilterPortConnectionRole.Control);
+
+    private static FilterPortConnection Connect(uint serviceProcessId, FilterPortConnectionRole role)
     {
-        var contextSize = Marshal.SizeOf<uint>();
+        var contextSize = Marshal.SizeOf<ConnectContext>();
         using var context = new FilterPortMessageBuffer(contextSize);
-        Marshal.WriteInt32(context.Pointer, unchecked((int)serviceProcessId));
+        Marshal.StructureToPtr(
+            new ConnectContext
+            {
+                ServiceProcessId = serviceProcessId,
+                Role = (uint)role
+            },
+            context.Pointer,
+            false);
 
         var hr = NativeMethods.FilterConnectCommunicationPort(
             AppPaths.DriverPortName,
@@ -171,5 +186,18 @@ public sealed class FilterPortConnection : IDisposable
     {
         _handle.Dispose();
         GC.SuppressFinalize(this);
+    }
+
+    private enum FilterPortConnectionRole : uint
+    {
+        Query = 1,
+        Control = 2
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ConnectContext
+    {
+        public uint ServiceProcessId;
+        public uint Role;
     }
 }

@@ -59,10 +59,11 @@ public sealed class AdminPipeServer : BackgroundService
     {
         await using (pipe.ConfigureAwait(false))
         {
+            StreamWriter? writer = null;
             try
             {
                 using var reader = new StreamReader(pipe, Encoding.UTF8, false, 1024, true);
-                using var writer = new StreamWriter(pipe, Encoding.UTF8, 1024, true) { AutoFlush = true };
+                writer = new StreamWriter(pipe, Encoding.UTF8, 1024, true) { AutoFlush = true };
 
                 var requestJson = await reader.ReadLineAsync(stoppingToken).ConfigureAwait(false);
                 if (string.IsNullOrWhiteSpace(requestJson))
@@ -70,10 +71,23 @@ public sealed class AdminPipeServer : BackgroundService
                     return;
                 }
 
-                var request = JsonSerializer.Deserialize<AdminRequest>(requestJson, SecureVol.Common.Policy.PolicyConfig.JsonOptions());
-                var response = request is null
-                    ? new AdminResponse { Success = false, Message = "Invalid request payload." }
-                    : await _coordinator.HandleAdminRequestAsync(request, stoppingToken).ConfigureAwait(false);
+                AdminResponse response;
+                try
+                {
+                    var request = JsonSerializer.Deserialize<AdminRequest>(requestJson, SecureVol.Common.Policy.PolicyConfig.JsonOptions());
+                    response = request is null
+                        ? new AdminResponse { Success = false, Message = "Invalid request payload." }
+                        : await _coordinator.HandleAdminRequestAsync(request, stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Admin request failed.");
+                    response = new AdminResponse { Success = false, Message = ex.Message };
+                }
 
                 var responseJson = JsonSerializer.Serialize(response, SecureVol.Common.Policy.PolicyConfig.JsonOptions());
                 await writer.WriteLineAsync(responseJson.AsMemory(), stoppingToken).ConfigureAwait(false);
@@ -88,6 +102,10 @@ public sealed class AdminPipeServer : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Admin pipe client handler failed.");
+            }
+            finally
+            {
+                writer?.Dispose();
             }
         }
     }

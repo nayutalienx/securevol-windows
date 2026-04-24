@@ -29,7 +29,7 @@ public sealed class SecureVolWorker : BackgroundService
             FilterPortConnection? connection = null;
             try
             {
-                connection = FilterPortConnection.Connect((uint)Environment.ProcessId);
+                connection = FilterPortConnection.ConnectQuery((uint)Environment.ProcessId);
                 _coordinator.AttachDriver(connection);
                 await _coordinator.PushPolicyToDriverAsync(stoppingToken).ConfigureAwait(false);
 

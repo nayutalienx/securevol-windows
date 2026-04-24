@@ -49,6 +49,25 @@ function Get-MSBuildPath {
     return $path.Trim()
 }
 
+function Get-PowerShellHostPath {
+    $currentProcess = Get-Process -Id $PID
+    if ($currentProcess.Path -and (Test-Path $currentProcess.Path)) {
+        return $currentProcess.Path
+    }
+
+    $pwsh = Join-Path $PSHOME 'pwsh.exe'
+    if (Test-Path $pwsh) {
+        return $pwsh
+    }
+
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path $windowsPowerShell) {
+        return $windowsPowerShell
+    }
+
+    throw 'A usable PowerShell host executable could not be located.'
+}
+
 function Get-InstalledWdkVersion {
     $kitsRoot = 'C:\Program Files (x86)\Windows Kits\10\build'
     $kitsContentRoot = 'C:\Program Files (x86)\Windows Kits\10'
@@ -285,7 +304,7 @@ if ($SkipTests) {
 }
 
 Write-Step 'Building the full SecureVol release bundle with the native Dear ImGui admin UI'
-Invoke-External -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $buildReleaseArgs -FailureMessage 'Build-Release.ps1 failed.'
+Invoke-External -FilePath (Get-PowerShellHostPath) -ArgumentList $buildReleaseArgs -FailureMessage 'Build-Release.ps1 failed.'
 
 $releaseRoot = Join-Path $bundleOutputRoot "SecureVol-$Configuration-imgui-$RuntimeIdentifier"
 $releaseZip = "$releaseRoot.zip"
