@@ -10,8 +10,27 @@ internal static class Program
     private static void Main()
     {
         EnsureElevatedOrExit();
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, args) => ShowFatalError(args.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            if (args.ExceptionObject is Exception ex)
+            {
+                ShowFatalError(ex);
+            }
+        };
+
         ApplicationConfiguration.Initialize();
         Application.Run(new InstallerForm());
+    }
+
+    private static void ShowFatalError(Exception exception)
+    {
+        MessageBox.Show(
+            exception.ToString(),
+            "SecureVol Installer",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Error);
     }
 
     private static void EnsureElevatedOrExit()

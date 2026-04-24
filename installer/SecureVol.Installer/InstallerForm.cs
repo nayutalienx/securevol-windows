@@ -488,7 +488,16 @@ internal sealed class InstallerForm : Form
     {
         if (InvokeRequired)
         {
-            BeginInvoke(() => AppendLine(line));
+            try
+            {
+                BeginInvoke(() => AppendLine(line));
+            }
+            catch (InvalidOperationException)
+            {
+                // The window is closing; dropping late process output is safer than surfacing
+                // a generic WinForms error dialog after the setup action already finished.
+            }
+
             return;
         }
 
@@ -500,7 +509,15 @@ internal sealed class InstallerForm : Form
         {
             lock (_logSync)
             {
-                File.AppendAllText(_currentLogPath, line + Environment.NewLine, Encoding.UTF8);
+                try
+                {
+                    File.AppendAllText(_currentLogPath, line + Environment.NewLine, Encoding.UTF8);
+                }
+                catch
+                {
+                    // The visible log is the primary feedback channel. File logging is best-effort
+                    // and must never fail the install/uninstall operation.
+                }
             }
         }
     }

@@ -125,12 +125,9 @@ internal static class InstallerEngine
         TryUnloadFilter(plan.DriverServiceName);
         TryStopService(plan.ServiceName);
 
-        if (File.Exists(installLayout.DriverInfPath))
-        {
-            TryUninstallDriver(installLayout.DriverInfPath);
-        }
-
         TryDeleteService(plan.ServiceName);
+        TryDeleteService(plan.DriverServiceName);
+        TryDeleteInstalledDriverBinary(plan.DriverServiceName);
         RemoveShortcuts(plan.StartMenuFolderName);
 
         TryDeleteDirectory(installLayout.AppRoot);
@@ -254,31 +251,32 @@ internal static class InstallerEngine
         var packagedDriverBinary = Path.Combine(driverPackageRoot, "SecureVolFlt.sys");
         var installedDriverBinary = Path.Combine(Environment.SystemDirectory, "drivers", "SecureVolFlt.sys");
 
-        var output = RunProcessCapture(
-            Path.Combine(Environment.SystemDirectory, "rundll32.exe"),
-            $@"setupapi.dll,InstallHinfSection DefaultInstall.NTamd64 132 ""{driverInfPath}""",
-            allowNonZeroExit: true,
-            out var exitCode);
-
-        if (exitCode != 0)
+        if (!File.Exists(packagedDriverBinary))
         {
-            Console.WriteLine($"[SecureVol] SetupAPI install warning: {output}".Trim());
+            throw new InvalidOperationException($"Packaged SecureVolFlt.sys was not found at '{packagedDriverBinary}'.");
         }
 
-        if (!File.Exists(installedDriverBinary))
-        {
-            if (!File.Exists(packagedDriverBinary))
-            {
-                throw new InvalidOperationException(
-                    $"SecureVolFlt.sys was not found at '{installedDriverBinary}' after SetupAPI install, and the packaged source '{packagedDriverBinary}' is missing.");
-            }
+        TryStageDriverPackage(driverInfPath);
 
-            Console.WriteLine($"[SecureVol] Copying missing driver binary to '{installedDriverBinary}'.");
-            Directory.CreateDirectory(Path.GetDirectoryName(installedDriverBinary)!);
-            CopyFileWithRetry(packagedDriverBinary, installedDriverBinary, TimeSpan.FromSeconds(10));
-        }
+        Console.WriteLine($"[SecureVol] Copying driver binary to '{installedDriverBinary}'.");
+        Directory.CreateDirectory(Path.GetDirectoryName(installedDriverBinary)!);
+        CopyFileWithRetry(packagedDriverBinary, installedDriverBinary, TimeSpan.FromSeconds(10));
 
         EnsureMinifilterServiceRegistration(driverServiceName, installedDriverBinary);
+    }
+
+    private static void TryStageDriverPackage(string driverInfPath)
+    {
+        var output = RunProcessCapture("pnputil.exe", $@"/add-driver ""{driverInfPath}""", allowNonZeroExit: true, out var exitCode);
+        if (exitCode == 0)
+        {
+            Console.WriteLine("[SecureVol] Driver package staged with pnputil.");
+            return;
+        }
+
+        // The minifilter service is registered explicitly below. Staging is useful for Driver Store
+        // bookkeeping, but it must not surface SetupAPI GUI popups or block local repair installs.
+        Console.WriteLine($"[SecureVol] pnputil staging warning: {output}".Trim());
     }
 
     private static void EnsureMinifilterServiceRegistration(string driverServiceName, string installedDriverBinary)
@@ -338,21 +336,6 @@ internal static class InstallerEngine
 
         defaultInstanceKey.SetValue("Altitude", "370030", RegistryValueKind.String);
         defaultInstanceKey.SetValue("Flags", 0, RegistryValueKind.DWord);
-    }
-
-    private static void TryUninstallDriver(string driverInfPath)
-    {
-        try
-        {
-            RunProcess(
-                Path.Combine(Environment.SystemDirectory, "rundll32.exe"),
-                $@"setupapi.dll,InstallHinfSection DefaultUninstall.NTamd64 132 ""{driverInfPath}""",
-                "Failed to uninstall the SecureVol minifilter package.");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[SecureVol] Driver uninstall warning: {ex.Message}");
-        }
     }
 
     private static void StartService(string serviceName)
@@ -487,6 +470,31 @@ internal static class InstallerEngine
         }
 
         Console.WriteLine($"[SecureVol] Service delete warning: {output}".Trim());
+    }
+
+    private static void TryDeleteInstalledDriverBinary(string driverServiceName)
+    {
+        if (IsServiceRunning(driverServiceName))
+        {
+            Console.WriteLine("[SecureVol] Keeping SecureVolFlt.sys because the minifilter is still loaded.");
+            return;
+        }
+
+        var installedDriverBinary = Path.Combine(Environment.SystemDirectory, "drivers", "SecureVolFlt.sys");
+        if (!File.Exists(installedDriverBinary))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(installedDriverBinary);
+            Console.WriteLine($"[SecureVol] Removed '{installedDriverBinary}'.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SecureVol] Driver binary cleanup warning: {ex.Message}");
+        }
     }
 
     private static bool ServiceExists(string serviceName)
