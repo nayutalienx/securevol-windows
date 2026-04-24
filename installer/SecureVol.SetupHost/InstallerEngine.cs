@@ -53,7 +53,7 @@ internal static class InstallerEngine
         }
 
         var targetRoot = Path.GetFullPath(options.TargetRoot);
-        var installLayout = InstalledLayout.FromRoot(targetRoot);
+        var installLayout = InstalledLayout.CreateForInstall(targetRoot);
 
         Console.WriteLine($"[SecureVol] Installing to '{targetRoot}'");
         Directory.CreateDirectory(targetRoot);
@@ -73,9 +73,18 @@ internal static class InstallerEngine
             hasDriverCertificate: InstallerReadiness.FromPlan(plan).DriverCertificateFound,
             enableTestSigning: options.EnableTestSigning);
 
-        InstallOrUpdateService(plan.ServiceName, installLayout.ServiceExecutable);
+        var serviceRestartDeferred = InstallOrUpdateService(plan.ServiceName, installLayout.ServiceExecutable);
         var driverUpdateDeferred = InstallOrUpdateDriver(installLayout.DriverInfPath, installLayout.DriverRoot, plan.DriverServiceName);
-        StartService(plan.ServiceName);
+
+        if (serviceRestartDeferred)
+        {
+            rebootRequired = true;
+            Console.WriteLine("[SecureVol] Service restart is deferred until reboot because the existing backend process could not be stopped.");
+        }
+        else
+        {
+            StartService(plan.ServiceName);
+        }
 
         if (driverUpdateDeferred)
         {
@@ -98,9 +107,12 @@ internal static class InstallerEngine
             CreateStartMenuShortcuts(plan, installLayout);
         }
 
+        CleanupSupersededPayloads(targetRoot, installLayout.PayloadRoot);
+
         Console.WriteLine();
         Console.WriteLine("[SecureVol] Install summary");
         Console.WriteLine($"InstallRoot      : {targetRoot}");
+        Console.WriteLine($"PayloadRoot      : {installLayout.PayloadRoot}");
         Console.WriteLine($"AdminApp         : {installLayout.AppExecutable}");
         Console.WriteLine($"ServiceInstalled : {ServiceExists(plan.ServiceName)}");
         Console.WriteLine($"DriverInstalled  : {File.Exists(installLayout.DriverInfPath)}");
@@ -122,7 +134,8 @@ internal static class InstallerEngine
     private static void PrepareInstallTargetForUpdate(string targetRoot, string serviceName, string driverServiceName)
     {
         // Existing installs may have a running service, an orphaned worker, or an open UI process
-        // loaded from the current install root. Clear those first so in-place payload replacement works.
+        // loaded from the current install root. New payloads are versioned, so this is best-effort
+        // process cleanup rather than a prerequisite for copying files.
         TryStopService(serviceName);
         if (IsServiceRunning(driverServiceName))
         {
@@ -164,6 +177,7 @@ internal static class InstallerEngine
         TryDeleteDirectory(installLayout.CliRoot);
         TryDeleteDirectory(installLayout.ServiceRoot);
         TryDeleteDirectory(installLayout.DriverRoot);
+        TryDeleteDirectory(Path.Combine(targetRoot, "payloads"));
 
         var runningFromInstallRoot = !string.IsNullOrWhiteSpace(Environment.ProcessPath) &&
                                      Path.GetFullPath(Environment.ProcessPath)
@@ -366,9 +380,9 @@ internal static class InstallerEngine
                output.Contains("Yes", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void InstallOrUpdateService(string serviceName, string serviceExecutable)
+    private static bool InstallOrUpdateService(string serviceName, string serviceExecutable)
     {
-        TryStopService(serviceName);
+        var stopped = TryStopService(serviceName);
         if (ServiceExists(serviceName))
         {
             RunProcess("sc.exe", $@"config {serviceName} binPath= ""{serviceExecutable}"" start= demand", "Failed to update the SecureVol service.");
@@ -380,6 +394,8 @@ internal static class InstallerEngine
                 $@"create {serviceName} binPath= ""{serviceExecutable}"" start= demand DisplayName= ""SecureVol Service""",
                 "Failed to create the SecureVol service.");
         }
+
+        return !stopped && IsServiceRunning(serviceName);
     }
 
     private static bool InstallOrUpdateDriver(string driverInfPath, string driverPackageRoot, string driverServiceName)
@@ -514,17 +530,17 @@ internal static class InstallerEngine
         WaitForServiceState(serviceName, "RUNNING", TimeSpan.FromSeconds(20));
     }
 
-    private static void TryStopService(string serviceName)
+    private static bool TryStopService(string serviceName)
     {
         if (!ServiceExists(serviceName))
         {
-            return;
+            return true;
         }
 
         var state = GetServiceState(serviceName);
         if (state == "STOPPED")
         {
-            return;
+            return true;
         }
 
         if (state != "STOP_PENDING")
@@ -533,21 +549,25 @@ internal static class InstallerEngine
             if (exitCode != 0 &&
                 !output.Contains("service has not been started", StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException($"Failed to stop the SecureVol service. {output}".Trim());
+                Console.WriteLine($"[SecureVol] Service stop warning for '{serviceName}': {output}".Trim());
+                return false;
             }
         }
 
         if (TryWaitForServiceState(serviceName, "STOPPED", TimeSpan.FromSeconds(20)))
         {
-            return;
+            return true;
         }
 
         ForceStopServiceProcess(serviceName);
 
         if (!TryWaitForServiceState(serviceName, "STOPPED", TimeSpan.FromSeconds(10)))
         {
-            throw new InvalidOperationException($"Timed out waiting for service '{serviceName}' to reach state 'STOPPED'.");
+            Console.WriteLine($"[SecureVol] Timed out waiting for service '{serviceName}' to reach state 'STOPPED'.");
+            return false;
         }
+
+        return true;
     }
 
     private static void ForceStopServiceProcess(string serviceName)
@@ -1040,6 +1060,41 @@ internal static class InstallerEngine
         }
     }
 
+    private static void CleanupSupersededPayloads(string targetRoot, string currentPayloadRoot)
+    {
+        var payloadsRoot = Path.Combine(targetRoot, "payloads");
+        if (!Directory.Exists(payloadsRoot))
+        {
+            return;
+        }
+
+        var normalizedCurrent = Path.GetFullPath(currentPayloadRoot).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+
+        foreach (var payloadDirectory in Directory.EnumerateDirectories(payloadsRoot))
+        {
+            var normalizedPayload = Path.GetFullPath(payloadDirectory).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar);
+
+            if (string.Equals(normalizedPayload, normalizedCurrent, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            TryDeleteDirectory(payloadDirectory);
+        }
+
+        // Legacy pre-versioned installs used these fixed component directories. They can stay
+        // if a stale process still holds them, but they must never block the new install.
+        TryDeleteDirectory(Path.Combine(targetRoot, "service"));
+        TryDeleteDirectory(Path.Combine(targetRoot, "app"));
+        TryDeleteDirectory(Path.Combine(targetRoot, "cli"));
+        TryDeleteDirectory(Path.Combine(targetRoot, "setup"));
+        TryDeleteDirectory(Path.Combine(targetRoot, "driver"));
+    }
+
     private static void RunProcess(string fileName, string arguments, string failureMessage)
     {
         var output = RunProcessCapture(fileName, arguments, allowNonZeroExit: true, out var exitCode);
@@ -1105,6 +1160,7 @@ internal static class InstallerEngine
 
     private sealed record InstalledLayout(
         string Root,
+        string PayloadRoot,
         string ServiceRoot,
         string CliRoot,
         string AppRoot,
@@ -1127,6 +1183,7 @@ internal static class InstallerEngine
 
             return new InstalledLayout(
                 normalizedRoot,
+                normalizedRoot,
                 serviceRoot,
                 cliRoot,
                 appRoot,
@@ -1139,6 +1196,32 @@ internal static class InstallerEngine
                         .FirstOrDefault(path => !path.EndsWith("SecureVol.SetupHost.exe", StringComparison.OrdinalIgnoreCase))
                       ?? Path.Combine(appRoot, "SecureVol.ImGui.exe")
                     : Path.Combine(appRoot, "SecureVol.ImGui.exe"),
+                Path.Combine(driverRoot, "SecureVolFlt.inf"),
+                Path.Combine(setupRoot, "SecureVol.SetupHost.exe"));
+        }
+
+        public static InstalledLayout CreateForInstall(string root)
+        {
+            var normalizedRoot = Path.GetFullPath(root);
+            var payloadId = DateTime.UtcNow.ToString("yyyyMMddHHmmss") + "-" + Guid.NewGuid().ToString("N")[..8];
+            var payloadRoot = Path.Combine(normalizedRoot, "payloads", payloadId);
+            var serviceRoot = Path.Combine(payloadRoot, "service");
+            var cliRoot = Path.Combine(payloadRoot, "cli");
+            var appRoot = Path.Combine(payloadRoot, "app");
+            var driverRoot = Path.Combine(payloadRoot, "driver");
+            var setupRoot = Path.Combine(payloadRoot, "setup");
+
+            return new InstalledLayout(
+                normalizedRoot,
+                payloadRoot,
+                serviceRoot,
+                cliRoot,
+                appRoot,
+                driverRoot,
+                setupRoot,
+                Path.Combine(serviceRoot, "SecureVol.Service.exe"),
+                Path.Combine(cliRoot, "securevol.exe"),
+                Path.Combine(appRoot, "SecureVol.ImGui.exe"),
                 Path.Combine(driverRoot, "SecureVolFlt.inf"),
                 Path.Combine(setupRoot, "SecureVol.SetupHost.exe"));
         }

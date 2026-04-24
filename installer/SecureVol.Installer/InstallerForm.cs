@@ -419,17 +419,16 @@ internal sealed class InstallerForm : Form
 
     private void LaunchAdminApp()
     {
-        var appPath = Path.Combine(
+        var installRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            "SecureVol",
-            "app",
-            "SecureVol.ImGui.exe");
+            "SecureVol");
+        var appPath = ResolveInstalledAdminApp(installRoot);
 
-        if (!File.Exists(appPath))
+        if (string.IsNullOrWhiteSpace(appPath) || !File.Exists(appPath))
         {
             MessageBox.Show(
                 this,
-                $"SecureVol admin app was not found at '{appPath}'. Install SecureVol first.",
+                $"SecureVol admin app was not found under '{installRoot}'. Install SecureVol first.",
                 "SecureVol Installer",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -441,6 +440,27 @@ internal sealed class InstallerForm : Form
             FileName = appPath,
             UseShellExecute = true
         });
+    }
+
+    private static string? ResolveInstalledAdminApp(string installRoot)
+    {
+        var payloadsRoot = Path.Combine(installRoot, "payloads");
+        if (Directory.Exists(payloadsRoot))
+        {
+            var versionedPath = Directory.EnumerateFiles(payloadsRoot, "SecureVol.ImGui.exe", SearchOption.AllDirectories)
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Select(file => file.FullName)
+                .FirstOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(versionedPath))
+            {
+                return versionedPath;
+            }
+        }
+
+        var legacyPath = Path.Combine(installRoot, "app", "SecureVol.ImGui.exe");
+        return File.Exists(legacyPath) ? legacyPath : null;
     }
 
     private void OpenLogsFolder()

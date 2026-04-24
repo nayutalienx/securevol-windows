@@ -40,8 +40,9 @@ Important for the current preview:
 
 - the bundled driver is still test-signed,
 - a new machine currently needs Windows test-signing mode enabled,
-- installation must be run from an elevated shell or by launching `Install-SecureVol.cmd` as Administrator,
+- installation must be run as Administrator; the GUI installer requests elevation,
 - if test-signing was just enabled, Windows must be rebooted and the installer run again.
+- repair/update installs backend payloads into versioned directories under `C:\Program Files\SecureVol\payloads`, so a running old service cannot block copying the new release.
 
 ## Quick install on a new machine
 
@@ -51,6 +52,10 @@ Important for the current preview:
 4. Reboot if the installer enables test-signing.
 5. Run `SecureVol.Installer.exe` again after reboot if prompted.
 6. Launch the admin app from the installer or the Start Menu shortcut.
+
+## Updating
+
+Run the newer `SecureVol.Installer.exe` as Administrator and click `Repair`. The installer writes a fresh payload directory, points the Windows service at the new backend path, updates shortcuts, and only then tries to clean old payloads. If Windows still has the old backend loaded, cleanup is skipped and the installer reports `RebootRequired: True` instead of failing.
 
 ## Project status
 
