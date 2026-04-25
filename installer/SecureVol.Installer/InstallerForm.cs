@@ -249,6 +249,8 @@ internal sealed class InstallerForm : Form
 
         AppendInstallerMessage("Embedded payload ready. Click Install to deploy SecureVol.");
         AppendInstallerMessage($"Installer logs are written to '{_logsRoot}'.");
+        AppendInstallerMessage($"Installer executable: {Environment.ProcessPath ?? "<unknown>"}");
+        AppendInstallerMessage($"Elevated token: {Program.IsProcessElevated()}");
 
         if (!Program.IsProcessElevated())
         {

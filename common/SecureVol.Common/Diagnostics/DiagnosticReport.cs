@@ -21,6 +21,7 @@ public static class DiagnosticReport
 {
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan UploadTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan OverallUploadTimeout = TimeSpan.FromSeconds(18);
 
     public static async Task<DiagnosticReportResult> CreateAsync(CancellationToken cancellationToken = default)
     {
@@ -60,25 +61,38 @@ public static class DiagnosticReport
         boundedCollection.CancelAfter(TimeSpan.FromSeconds(12));
         var report = await CreateAsync(boundedCollection.Token).ConfigureAwait(false);
         var failures = new List<string>();
-        var uploaders = new Func<DiagnosticReportResult, CancellationToken, Task<DiagnosticUploadResult>>[]
+        var uploaders = new (string Name, Func<DiagnosticReportResult, CancellationToken, Task<DiagnosticUploadResult>> Upload)[]
         {
-            UploadToPasteRsAsync,
-            UploadToDpasteAsync,
-            UploadTo0x0Async
+            ("paste.rs", UploadToPasteRsAsync),
+            ("dpaste.org", UploadToDpasteAsync),
+            ("mclo.gs", UploadToMclogsAsync),
+            ("0x0.st", UploadTo0x0Async)
         };
 
+        using var uploadSweep = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        uploadSweep.CancelAfter(OverallUploadTimeout);
+
         var tasks = uploaders
-            .Select(uploader => RunUploaderWithTimeoutAsync(uploader, report, cancellationToken))
+            .Select(uploader => RunUploaderWithTimeoutAsync(uploader.Name, uploader.Upload, report, uploadSweep.Token))
             .ToList();
+        var overallTimeout = Task.Delay(OverallUploadTimeout, CancellationToken.None);
 
         while (tasks.Count > 0)
         {
-            var completed = await Task.WhenAny(tasks).ConfigureAwait(false);
-            tasks.Remove(completed);
+            var completed = await Task.WhenAny(tasks.Cast<Task>().Append(overallTimeout)).ConfigureAwait(false);
+            if (completed == overallTimeout)
+            {
+                uploadSweep.Cancel();
+                failures.Add($"overall upload timed out after {OverallUploadTimeout.TotalSeconds:N0}s");
+                break;
+            }
+
+            var completedUpload = (Task<DiagnosticUploadResult>)completed;
+            tasks.Remove(completedUpload);
 
             try
             {
-                return await completed.ConfigureAwait(false);
+                return await completedUpload.ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -86,19 +100,30 @@ public static class DiagnosticReport
             }
         }
 
+        TryWriteUploadFailureLog(report.ReportPath, failures);
         throw new InvalidOperationException(
             "All diagnostic upload providers failed. Local report: " + report.ReportPath + Environment.NewLine +
             string.Join(Environment.NewLine, failures));
     }
 
     private static async Task<DiagnosticUploadResult> RunUploaderWithTimeoutAsync(
+        string providerName,
         Func<DiagnosticReportResult, CancellationToken, Task<DiagnosticUploadResult>> uploader,
         DiagnosticReportResult report,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(UploadTimeout + TimeSpan.FromSeconds(2));
-        return await uploader(report, timeout.Token).ConfigureAwait(false);
+        var uploadTask = uploader(report, timeout.Token);
+        var timeoutTask = Task.Delay(UploadTimeout + TimeSpan.FromSeconds(2), CancellationToken.None);
+        var completed = await Task.WhenAny(uploadTask, timeoutTask).ConfigureAwait(false);
+        if (completed != uploadTask)
+        {
+            timeout.Cancel();
+            throw new TimeoutException($"{providerName} upload timed out after {UploadTimeout.TotalSeconds + 2:N0}s");
+        }
+
+        return await uploadTask.ConfigureAwait(false);
     }
 
     public static void OpenInBrowser(string url)
@@ -172,6 +197,37 @@ public static class DiagnosticReport
         return new DiagnosticUploadResult(body, "0x0.st", report.ReportPath);
     }
 
+    private static async Task<DiagnosticUploadResult> UploadToMclogsAsync(
+        DiagnosticReportResult report,
+        CancellationToken cancellationToken)
+    {
+        using var client = CreateUploadClient();
+        using var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["content"] = report.ReportText
+        });
+
+        using var response = await client.PostAsync("https://api.mclo.gs/1/log", form, cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"mclo.gs returned {(int)response.StatusCode}: {TrimForMessage(body)}");
+        }
+
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        if (!root.TryGetProperty("success", out var success) ||
+            !success.GetBoolean() ||
+            !root.TryGetProperty("url", out var urlElement) ||
+            string.IsNullOrWhiteSpace(urlElement.GetString()) ||
+            !Uri.TryCreate(urlElement.GetString(), UriKind.Absolute, out _))
+        {
+            throw new InvalidOperationException($"mclo.gs returned an invalid response: {TrimForMessage(body)}");
+        }
+
+        return new DiagnosticUploadResult(urlElement.GetString()!, "mclo.gs", report.ReportPath);
+    }
+
     private static HttpClient CreateUploadClient()
     {
         var client = new HttpClient
@@ -179,7 +235,23 @@ public static class DiagnosticReport
             Timeout = UploadTimeout
         };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("SecureVol-Diagnostics");
+        client.DefaultRequestHeaders.ExpectContinue = false;
         return client;
+    }
+
+    private static void TryWriteUploadFailureLog(string reportPath, IReadOnlyList<string> failures)
+    {
+        try
+        {
+            var failurePath = Path.Combine(
+                Path.GetDirectoryName(reportPath)!,
+                Path.GetFileNameWithoutExtension(reportPath) + ".upload-errors.txt");
+            File.WriteAllLines(failurePath, failures, Encoding.UTF8);
+        }
+        catch
+        {
+            // Upload diagnostics must not fail again while recording why upload failed.
+        }
     }
 
     private static async Task AppendPolicyAndStatusAsync(StringBuilder builder, CancellationToken cancellationToken)
