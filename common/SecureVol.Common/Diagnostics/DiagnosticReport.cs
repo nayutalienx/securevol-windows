@@ -19,7 +19,8 @@ public sealed record DiagnosticUploadResult(
 
 public static class DiagnosticReport
 {
-    private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan UploadTimeout = TimeSpan.FromSeconds(8);
 
     public static async Task<DiagnosticReportResult> CreateAsync(CancellationToken cancellationToken = default)
     {
@@ -55,7 +56,9 @@ public static class DiagnosticReport
 
     public static async Task<DiagnosticUploadResult> UploadAsync(CancellationToken cancellationToken = default)
     {
-        var report = await CreateAsync(cancellationToken).ConfigureAwait(false);
+        using var boundedCollection = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        boundedCollection.CancelAfter(TimeSpan.FromSeconds(12));
+        var report = await CreateAsync(boundedCollection.Token).ConfigureAwait(false);
         var failures = new List<string>();
 
         foreach (var uploader in new Func<DiagnosticReportResult, CancellationToken, Task<DiagnosticUploadResult>>[]
@@ -131,7 +134,7 @@ public static class DiagnosticReport
     {
         var client = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(20)
+            Timeout = UploadTimeout
         };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("SecureVol-Diagnostics");
         return client;
@@ -191,23 +194,32 @@ public static class DiagnosticReport
             ("fltmc filters", "fltmc.exe", "filters"),
             ("fltmc instances -f SecureVolFlt", "fltmc.exe", "instances -f SecureVolFlt"),
             ("fltmc volumes", "fltmc.exe", "volumes"),
-            ("mountvol", "mountvol.exe", string.Empty),
-            ("bcdedit enum", "bcdedit.exe", "/enum"),
-            ("wevtutil SecureVol Application events", "wevtutil.exe", "qe Application /q:\"*[System[(Provider[@Name='SecureVol'] or Provider[@Name='SecureVolSvc'])]]\" /f:text /c:80"),
         };
 
-        foreach (var drive in SafeEnumerateMountedDriveRoots())
+        if (TryReadProtectedMountPoint() is { } protectedMount)
         {
-            var mount = drive.TrimEnd('\\');
+            var mount = protectedMount.TrimEnd('\\');
             commands.Add(($"fltmc instances -v {mount}", "fltmc.exe", $"instances -v {mount}"));
         }
+        else if (SafeEnumerateMountedDriveRoots().FirstOrDefault(static drive => drive.StartsWith("A:", StringComparison.OrdinalIgnoreCase)) is { } driveA)
+        {
+            commands.Add(("fltmc instances -v A:", "fltmc.exe", $"instances -v {driveA.TrimEnd('\\')}"));
+        }
 
-        foreach (var command in commands)
+        var tasks = commands
+            .Select(async command =>
+            {
+                var result = await RunCommandAsync(command.FileName, command.Arguments, CommandTimeout, cancellationToken).ConfigureAwait(false);
+                return (command.Title, Result: result);
+            })
+            .ToArray();
+
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        foreach (var result in results)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            AppendSubHeader(builder, command.Title);
-            var result = await RunCommandAsync(command.FileName, command.Arguments, CommandTimeout, cancellationToken).ConfigureAwait(false);
-            builder.AppendLine(result);
+            AppendSubHeader(builder, result.Title);
+            builder.AppendLine(result.Result);
         }
     }
 
@@ -231,7 +243,7 @@ public static class DiagnosticReport
             files = Directory.EnumerateFiles(installRoot, "*", SearchOption.AllDirectories)
                 .Select(path => new FileInfo(path))
                 .OrderBy(file => file.FullName, StringComparer.OrdinalIgnoreCase)
-                .Take(700)
+                .Take(180)
                 .ToArray();
         }
         catch (Exception ex)
@@ -265,7 +277,7 @@ public static class DiagnosticReport
             files = Directory.EnumerateFiles(AppPaths.LogDirectory, "*", SearchOption.AllDirectories)
                 .Select(path => new FileInfo(path))
                 .OrderByDescending(file => file.LastWriteTimeUtc)
-                .Take(16)
+                .Take(8)
                 .OrderBy(file => file.FullName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
         }
@@ -279,7 +291,7 @@ public static class DiagnosticReport
         {
             cancellationToken.ThrowIfCancellationRequested();
             AppendSubHeader(builder, Path.GetRelativePath(AppPaths.LogDirectory, file.FullName));
-            await AppendTailAsync(builder, file.FullName, maxChars: 60_000, cancellationToken).ConfigureAwait(false);
+            await AppendTailAsync(builder, file.FullName, maxChars: 24_000, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -292,7 +304,7 @@ public static class DiagnosticReport
             return;
         }
 
-        await AppendTailAsync(builder, path, maxChars: 120_000, cancellationToken).ConfigureAwait(false);
+        await AppendTailAsync(builder, path, maxChars: 48_000, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task AppendTailAsync(
@@ -358,8 +370,8 @@ public static class DiagnosticReport
             }
 
             output.AppendLine("exit_code=" + (process.HasExited ? process.ExitCode.ToString() : "<killed>"));
-            output.AppendLine(await stdoutTask.ConfigureAwait(false));
-            var stderr = await stderrTask.ConfigureAwait(false);
+            output.AppendLine(await ReadCommandStreamBestEffortAsync(stdoutTask).ConfigureAwait(false));
+            var stderr = await ReadCommandStreamBestEffortAsync(stderrTask).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(stderr))
             {
                 output.AppendLine("--- stderr ---");
@@ -388,6 +400,37 @@ public static class DiagnosticReport
         {
             return [];
         }
+    }
+
+    private static string? TryReadProtectedMountPoint()
+    {
+        try
+        {
+            if (!File.Exists(AppPaths.PolicyFilePath))
+            {
+                return null;
+            }
+
+            var policy = PolicyConfig.Load(AppPaths.PolicyFilePath);
+            return string.IsNullOrWhiteSpace(policy.ProtectedMountPoint)
+                ? null
+                : PolicyConfig.NormalizeVolumeIdentifier(policy.ProtectedMountPoint);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task<string> ReadCommandStreamBestEffortAsync(Task<string> readTask)
+    {
+        var completed = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromMilliseconds(600))).ConfigureAwait(false);
+        if (completed != readTask)
+        {
+            return "<stream read timed out>";
+        }
+
+        return await readTask.ConfigureAwait(false);
     }
 
     private static bool IsElevated()

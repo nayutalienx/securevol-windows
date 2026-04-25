@@ -1506,7 +1506,7 @@ static void DrawHeader(AppState& state)
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("SecureVol");
         ImGui::SameLine();
-        ImGui::TextDisabled("compact-main v11");
+        ImGui::TextDisabled("compact-main v12");
         ImGui::TextDisabled("backend: %s", state.Snapshot.BackendLabel.c_str());
         DrawEllipsizedText(state.StatusLine, 44, true);
 
@@ -1700,7 +1700,7 @@ static void DrawMorePopup(AppState& state)
         state.OpenMorePopup = false;
     }
 
-    ImGui::SetNextWindowSize(ImVec2(540.0f, 360.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(500.0f, 430.0f), ImGuiCond_Appearing);
     if (!ImGui::BeginPopupModal("More", nullptr, ImGuiWindowFlags_NoResize))
     {
         return;
@@ -1792,29 +1792,40 @@ static void DrawToolsPane(AppState& state, float height)
 {
     (void)height;
     DrawSectionTitle("tools");
-    if (ImGui::Button("Logs", ImVec2(ButtonWidth("Logs"), 0.0f)))
+
+    if (ImGui::BeginTable("ToolButtons", 2, ImGuiTableFlags_SizingStretchSame))
     {
-        OpenShellPath(ProgramDataRoot() / L"logs");
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Config", ImVec2(ButtonWidth("Config"), 0.0f)))
-    {
-        OpenShellPath(ConfigDirectory());
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Update", ImVec2(ButtonWidth("Update"), 0.0f)))
-    {
-        LaunchInstalledInstallerUpdate();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Diag", ImVec2(ButtonWidth("Diag"), 0.0f)))
-    {
-        LaunchDiagnosticsUpload();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Quit", ImVec2(ButtonWidth("Quit"), 0.0f)))
-    {
-        PostQuitMessage(0);
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        if (ImGui::Button("Logs", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
+        {
+            OpenShellPath(ProgramDataRoot() / L"logs");
+        }
+        ImGui::TableSetColumnIndex(1);
+        if (ImGui::Button("Config", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
+        {
+            OpenShellPath(ConfigDirectory());
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        if (ImGui::Button("Update", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
+        {
+            LaunchInstalledInstallerUpdate();
+        }
+        ImGui::TableSetColumnIndex(1);
+        if (ImGui::Button("Diagnostics", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
+        {
+            LaunchDiagnosticsUpload();
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        if (ImGui::Button("Quit", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
+        {
+            PostQuitMessage(0);
+        }
+        ImGui::EndTable();
     }
 
     if (state.PendingAction)
