@@ -8,5 +8,10 @@
     <AnalysisLevel>latest</AnalysisLevel>
     <Deterministic>true</Deterministic>
     <Platforms>x64</Platforms>
+    <SecureVolReleaseTag Condition="'$(SecureVolReleaseTag)' == ''">dev-local</SecureVolReleaseTag>
+    <AssemblyInformationalVersion>$(SecureVolReleaseTag)</AssemblyInformationalVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="SecureVolReleaseTag" Value="$(SecureVolReleaseTag)" />
+  </ItemGroup>
 </Project>

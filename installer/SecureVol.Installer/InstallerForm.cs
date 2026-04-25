@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using SecureVol.Common;
 using SecureVol.Common.Diagnostics;
 
 namespace SecureVol.Installer;
@@ -40,7 +41,7 @@ internal sealed class InstallerForm : Form
 
     public InstallerForm(InstallerStartupAction? startupAction = null)
     {
-        Text = "SecureVol Installer";
+        Text = $"SecureVol Installer {BuildIdentity.ReleaseTag}";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(840, 620);
         ClientSize = new Size(920, 700);
@@ -84,7 +85,7 @@ internal sealed class InstallerForm : Form
         {
             AutoSize = true,
             Font = new Font("Segoe UI Semibold", 20F, FontStyle.Bold, GraphicsUnit.Point),
-            Text = "SecureVol Installer",
+            Text = $"SecureVol Installer {BuildIdentity.ReleaseTag}",
             Location = new Point(0, 0)
         };
         headerPanel.Controls.Add(_titleLabel);
@@ -96,7 +97,7 @@ internal sealed class InstallerForm : Form
             Height = 48,
             Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point),
             ForeColor = Color.FromArgb(75, 85, 99),
-            Text = "Installs the SecureVol backend, minifilter package, native Dear ImGui admin app, and can update from the latest GitHub release.",
+            Text = $"Release {BuildIdentity.ReleaseTag}. Installs the SecureVol backend, minifilter package, native Dear ImGui admin app, and can update from the latest GitHub release.",
             Location = new Point(0, 42)
         };
         headerPanel.Controls.Add(_subtitleLabel);
@@ -248,6 +249,7 @@ internal sealed class InstallerForm : Form
         root.Controls.Add(footerPanel, 0, 4);
 
         AppendInstallerMessage("Embedded payload ready. Click Install to deploy SecureVol.");
+        AppendInstallerMessage($"Release tag: {BuildIdentity.ReleaseTag}");
         AppendInstallerMessage($"Installer logs are written to '{_logsRoot}'.");
         AppendInstallerMessage($"Installer executable: {Environment.ProcessPath ?? "<unknown>"}");
         AppendInstallerMessage($"Elevated token: {Program.IsProcessElevated()}");

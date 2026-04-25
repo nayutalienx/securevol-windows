@@ -36,6 +36,7 @@ public static class DiagnosticReport
         AppendHeader(builder, "SecureVol Diagnostics");
         AppendLine(builder, "warning", "This report can include local Windows user names, local paths, policy rules, volume IDs, and recent SecureVol logs.");
         AppendLine(builder, "timestamp_utc", DateTimeOffset.UtcNow.ToString("O"));
+        AppendLine(builder, "release_tag", BuildIdentity.ReleaseTag);
         AppendLine(builder, "machine", Environment.MachineName);
         AppendLine(builder, "user", WindowsIdentity.GetCurrent().Name);
         AppendLine(builder, "elevated", IsElevated().ToString());

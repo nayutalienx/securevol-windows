@@ -38,6 +38,12 @@ using namespace Windows::Data::Json;
 
 namespace fs = std::filesystem;
 
+#ifndef SECUREVOL_RELEASE_TAG
+#define SECUREVOL_RELEASE_TAG "dev-local"
+#endif
+
+static constexpr char const* kSecureVolReleaseTag = SECUREVOL_RELEASE_TAG;
+
 struct ScopedHandle
 {
     HANDLE Value{ INVALID_HANDLE_VALUE };
@@ -1565,7 +1571,7 @@ static void DrawHeader(AppState& state)
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("SecureVol");
         ImGui::SameLine();
-        ImGui::TextDisabled("compact-main v14");
+        ImGui::TextDisabled("%s", kSecureVolReleaseTag);
         ImGui::TextDisabled("backend: %s", state.Snapshot.BackendLabel.c_str());
         DrawEllipsizedText(state.StatusLine, 44, true);
 
@@ -2018,7 +2024,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandleW(nullptr), nullptr, nullptr, nullptr, nullptr, L"SecureVolImGuiNative", nullptr };
     ::RegisterClassExW(&wc);
-    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"SecureVol CompactMain v10", WS_OVERLAPPEDWINDOW, 80, 80, static_cast<int>(760 * mainScale), static_cast<int>(560 * mainScale), nullptr, nullptr, wc.hInstance, nullptr);
+    auto windowTitle = L"SecureVol Admin " + Utf8ToWide(kSecureVolReleaseTag);
+    HWND hwnd = ::CreateWindowW(wc.lpszClassName, windowTitle.c_str(), WS_OVERLAPPEDWINDOW, 80, 80, static_cast<int>(760 * mainScale), static_cast<int>(560 * mainScale), nullptr, nullptr, wc.hInstance, nullptr);
 
     if (!CreateDeviceD3D(hwnd))
     {

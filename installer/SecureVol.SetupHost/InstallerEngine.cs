@@ -140,6 +140,7 @@ internal static class InstallerEngine
 
         Console.WriteLine();
         Console.WriteLine("[SecureVol] Install summary");
+        Console.WriteLine($"ReleaseTag       : {BuildIdentity.ReleaseTag}");
         Console.WriteLine($"InstallRoot      : {targetRoot}");
         Console.WriteLine($"PayloadRoot      : {installLayout.PayloadRoot}");
         Console.WriteLine($"AdminApp         : {installLayout.AppExecutable}");

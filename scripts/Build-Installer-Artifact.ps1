@@ -7,6 +7,8 @@ param(
 
     [string]$OutputRoot = '',
 
+    [string]$ReleaseTag = '',
+
     [switch]$SkipTests
 )
 
@@ -33,6 +35,33 @@ function Invoke-External {
     if ($LASTEXITCODE -ne 0) {
         throw "$FailureMessage ExitCode=$LASTEXITCODE"
     }
+}
+
+function Resolve-ReleaseTag {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [string]$RequestedTag
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedTag)) {
+        return $RequestedTag.Trim()
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:SECUREVOL_RELEASE_TAG)) {
+        return $env:SECUREVOL_RELEASE_TAG.Trim()
+    }
+
+    try {
+        $tag = & git -C $RepoRoot describe --tags --always --dirty 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($tag)) {
+            return $tag.Trim()
+        }
+    }
+    catch {
+        # Fall through to a deterministic local marker.
+    }
+
+    return 'dev-local'
 }
 
 function Get-MSBuildPath {
@@ -232,7 +261,8 @@ function Publish-InstallerApp {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$PayloadZip,
-        [Parameter(Mandatory = $true)][string]$InstallerOutputRoot
+        [Parameter(Mandatory = $true)][string]$InstallerOutputRoot,
+        [Parameter(Mandatory = $true)][string]$ResolvedReleaseTag
     )
 
     $projectPath = Join-Path $RepoRoot 'installer\SecureVol.Installer\SecureVol.Installer.csproj'
@@ -248,6 +278,7 @@ function Publish-InstallerApp {
         '-r', $RuntimeIdentifier,
         '--self-contained', 'true',
         "/p:SecureVolPayloadZip=$PayloadZip",
+        "/p:SecureVolReleaseTag=$ResolvedReleaseTag",
         '-o', $publishDir
     ) -FailureMessage 'Failed to publish SecureVol.Installer.'
 
@@ -271,6 +302,7 @@ function Publish-InstallerApp {
 }
 
 $repoRoot = Resolve-RepoRoot
+$resolvedReleaseTag = Resolve-ReleaseTag -RepoRoot $repoRoot -RequestedTag $ReleaseTag
 $OutputRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     Join-Path $repoRoot 'artifacts\installer'
 }
@@ -296,21 +328,23 @@ $buildReleaseArgs = @(
     '-Configuration', $Configuration,
     '-RuntimeIdentifier', $RuntimeIdentifier,
     '-UiFlavor', 'imgui',
-    '-OutputRoot', $bundleOutputRoot
+    '-OutputRoot', $bundleOutputRoot,
+    '-ReleaseTag', $resolvedReleaseTag
 )
 
 if ($SkipTests) {
     $buildReleaseArgs += '-SkipTests'
 }
 
-Write-Step 'Building the full SecureVol release bundle with the native Dear ImGui admin UI'
+Write-Step "Building the full SecureVol release bundle with the native Dear ImGui admin UI (release tag '$resolvedReleaseTag')"
 Invoke-External -FilePath (Get-PowerShellHostPath) -ArgumentList $buildReleaseArgs -FailureMessage 'Build-Release.ps1 failed.'
 
 $releaseRoot = Join-Path $bundleOutputRoot "SecureVol-$Configuration-imgui-$RuntimeIdentifier"
 $releaseZip = "$releaseRoot.zip"
-$installer = Publish-InstallerApp -RepoRoot $repoRoot -PayloadZip $releaseZip -InstallerOutputRoot $OutputRoot
+$installer = Publish-InstallerApp -RepoRoot $repoRoot -PayloadZip $releaseZip -InstallerOutputRoot $OutputRoot -ResolvedReleaseTag $resolvedReleaseTag
 
 Write-Step 'Installer artifact is ready'
+Write-Host "ReleaseTag: $resolvedReleaseTag"
 Write-Host "Layout : $releaseRoot"
 Write-Host "Zip    : $releaseZip"
 Write-Host "Setup  : $($installer.Executable)"

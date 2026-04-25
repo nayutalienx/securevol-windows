@@ -10,6 +10,8 @@ param(
 
     [string]$OutputRoot = '',
 
+    [string]$ReleaseTag = '',
+
     [switch]$SkipTests,
     [switch]$SkipDriver
 )
@@ -33,6 +35,33 @@ function Invoke-Dotnet {
     }
 }
 
+function Resolve-ReleaseTag {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [string]$RequestedTag
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedTag)) {
+        return $RequestedTag.Trim()
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:SECUREVOL_RELEASE_TAG)) {
+        return $env:SECUREVOL_RELEASE_TAG.Trim()
+    }
+
+    try {
+        $tag = & git -C $RepoRoot describe --tags --always --dirty 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($tag)) {
+            return $tag.Trim()
+        }
+    }
+    catch {
+        # Fall through to a deterministic local marker.
+    }
+
+    return 'dev-local'
+}
+
 function Publish-Project {
     param(
         [string]$ProjectPath,
@@ -46,6 +75,7 @@ function Publish-Project {
         '-c', $Configuration,
         '-r', $RuntimeIdentifier,
         '--self-contained', 'true',
+        "/p:SecureVolReleaseTag=$script:ResolvedReleaseTag",
         '-o', $DestinationPath
     )
 }
@@ -72,7 +102,7 @@ function Build-NativeProject {
 
     $msbuild = Get-MSBuildPath
     Write-Step "Building native UI project $ProjectPath"
-    & $msbuild $ProjectPath /t:Build /p:Configuration=$Configuration /p:Platform=x64
+    & $msbuild $ProjectPath /t:Build /p:Configuration=$Configuration /p:Platform=x64 "/p:SecureVolReleaseTag=$script:ResolvedReleaseTag"
     if ($LASTEXITCODE -ne 0) {
         throw "MSBuild failed for '$ProjectPath' with exit code $LASTEXITCODE."
     }
@@ -110,6 +140,7 @@ function Write-LauncherScript {
 }
 
 $repoRoot = Split-Path -Path $PSScriptRoot -Parent
+$script:ResolvedReleaseTag = Resolve-ReleaseTag -RepoRoot $repoRoot -RequestedTag $ReleaseTag
 $OutputRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) { Join-Path $repoRoot 'release' } else { $OutputRoot }
 $releaseRoot = Join-Path $OutputRoot "SecureVol-$Configuration-$UiFlavor-$RuntimeIdentifier"
 $managedRoot = Join-Path $releaseRoot 'managed'
@@ -117,6 +148,7 @@ $driverRoot = Join-Path $releaseRoot 'driver'
 $docsRoot = Join-Path $releaseRoot 'docs'
 
 Write-Step "Preparing release root '$releaseRoot'"
+Write-Step "Embedding release tag '$script:ResolvedReleaseTag'"
 if (Test-Path $releaseRoot) {
     Remove-Item -LiteralPath $releaseRoot -Recurse -Force
 }
@@ -178,6 +210,7 @@ Write-LauncherScript -Path (Join-Path $releaseRoot 'Launch-SecureVol-Admin.cmd')
 
 $manifest = [ordered]@{
     createdUtc = [DateTimeOffset]::UtcNow
+    releaseTag = $script:ResolvedReleaseTag
     configuration = $Configuration
     runtimeIdentifier = $RuntimeIdentifier
     uiFlavor = $UiFlavor

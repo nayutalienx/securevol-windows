@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SecureVol.Common;
 
 namespace SecureVol.SetupHost;
 
@@ -34,6 +35,7 @@ internal static class Program
         var readiness = InstallerReadiness.FromPlan(plan);
 
         Console.WriteLine("SecureVol setup host");
+        Console.WriteLine($"ReleaseTag          : {BuildIdentity.ReleaseTag}");
         Console.WriteLine($"LayoutMode          : {plan.LayoutMode}");
         Console.WriteLine($"SourceRoot          : {plan.SourceRoot}");
         Console.WriteLine($"PayloadRoot         : {plan.PayloadRoot}");
