@@ -1335,6 +1335,75 @@ static bool ApplyLocalAllowRuleSetting(AddRuleDraft const& draft, DashboardSnaps
     return saved;
 }
 
+static bool ApplyLocalRemoveRuleSetting(std::string const& ruleName, DashboardSnapshot const& baseline, std::string& error)
+{
+    auto name = Trim(ruleName);
+    if (name.empty())
+    {
+        error = "Select an allow rule first.";
+        return false;
+    }
+
+    LogAdminTrace(
+        "rule.remove.write.start",
+        "{"
+        + JsonField("name", name) + ","
+        + JsonField("policyPath", WideToUtf8(PolicyPath().wstring()))
+        + "}");
+
+    JsonObject policy;
+    if (auto loaded = LoadJsonFile(PolicyPath(), error))
+    {
+        policy = *loaded;
+        LogAdminTrace("rule.remove.loaded", "{" + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + "}");
+    }
+    else
+    {
+        LogAdminTrace(
+            "rule.remove.load.failed",
+            "{"
+            + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + ","
+            + JsonField("error", error)
+            + "}");
+        return false;
+    }
+
+    EnsurePolicySkeleton(policy, baseline);
+
+    JsonArray updatedRules;
+    bool removed = false;
+    if (auto existingRules = TryGetArray(policy, L"allowRules"))
+    {
+        for (auto const& value : *existingRules)
+        {
+            if (value.ValueType() != JsonValueType::Object)
+            {
+                continue;
+            }
+
+            auto existing = value.GetObject();
+            if (JsonString(existing, L"name") == name)
+            {
+                removed = true;
+                continue;
+            }
+
+            updatedRules.Append(value);
+        }
+    }
+
+    policy.Insert(L"allowRules", updatedRules);
+    auto saved = SaveJsonFile(PolicyPath(), policy, error);
+    LogAdminTrace(
+        saved ? "rule.remove.write.success" : "rule.remove.write.failed",
+        "{"
+        + JsonField("name", name) + ","
+        + JsonField("removed", removed) + ","
+        + JsonField("error", error)
+        + "}");
+    return saved;
+}
+
 static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapshot baseline, std::string mountPoint)
 {
     auto normalizedMountPoint = NormalizeDriveRoot(!Trim(mountPoint).empty() ? mountPoint : baseline.ProtectedMountPoint);
@@ -1622,6 +1691,44 @@ static OperationResult ExecuteAllowRuleChange(AddRuleDraft draft, DashboardSnaps
     snapshot.LiveBackend = false;
     snapshot.PipeUp = false;
     return { true, "Rule saved: " + JoinCsv(actions) + ".", std::move(snapshot), true };
+}
+
+static OperationResult ExecuteRemoveRuleChange(std::string ruleName, DashboardSnapshot baseline)
+{
+    std::string error;
+    if (!ApplyLocalRemoveRuleSetting(ruleName, baseline, error))
+    {
+        auto snapshot = LoadLocalSnapshot();
+        snapshot.BackendLabel = "cached";
+        snapshot.LiveBackend = false;
+        snapshot.PipeUp = false;
+        return { false, "Failed to remove allow rule: " + error, std::move(snapshot), true };
+    }
+
+    std::vector<std::string> actions{ "policy saved locally" };
+    if (baseline.ProtectionEnabled)
+    {
+        auto mountPoint = NormalizeDriveRoot(baseline.ProtectedMountPoint);
+        std::string cliError;
+        if (TryRunCliProtectionChange(true, mountPoint, cliError))
+        {
+            actions.push_back("driver policy refreshed");
+        }
+        else
+        {
+            actions.push_back("driver refresh pending (" + cliError + ")");
+        }
+    }
+    else
+    {
+        actions.push_back("protection is off");
+    }
+
+    auto snapshot = LoadLocalSnapshot();
+    snapshot.BackendLabel = "cached";
+    snapshot.LiveBackend = false;
+    snapshot.PipeUp = false;
+    return { true, "Rule removed: " + JoinCsv(actions) + ".", std::move(snapshot), true };
 }
 
 static OperationResult ExecuteSetVolumeChange(std::string mountPoint, DashboardSnapshot baseline)
@@ -2209,10 +2316,8 @@ static void DrawRulesPane(AppState& state, float height)
     if (ImGui::Button("Remove", ImVec2(removeWidth, 0.0f)))
     {
         auto selected = state.Snapshot.Rules[static_cast<size_t>(state.SelectedRuleIndex)].Name;
-        JsonObject request;
-        request.Insert(L"command", JsonValue::CreateStringValue(L"remove-rule"));
-        request.Insert(L"ruleName", JsonValue::CreateStringValue(to_hstring(selected)));
-        StartOperation(state, "Removing allow rule...", [request] { return ExecuteCommandAndRefresh(request, "Rule removed."); });
+        auto baseline = state.Snapshot;
+        StartOperation(state, "Removing allow rule...", [selected, baseline] { return ExecuteRemoveRuleChange(selected, baseline); });
         state.SelectedRuleIndex = -1;
     }
     if (!canRemove)
