@@ -59,7 +59,7 @@ internal static class InstallerEngine
         Console.WriteLine($"[SecureVol] Installing to '{targetRoot}'");
         Directory.CreateDirectory(targetRoot);
 
-        PrepareInstallTargetForUpdate(targetRoot, plan.ServiceName, plan.DriverServiceName);
+        PrepareInstallTargetForUpdate(targetRoot, plan.ServiceName, plan.DriverServiceName, installLayout.InstallerRoot);
 
         CopyDirectory(Path.GetDirectoryName(plan.ServiceExecutable)!, installLayout.ServiceRoot);
         CopyDirectory(Path.GetDirectoryName(plan.CliExecutable)!, installLayout.CliRoot);
@@ -137,18 +137,27 @@ internal static class InstallerEngine
         return 0;
     }
 
-    private static void PrepareInstallTargetForUpdate(string targetRoot, string serviceName, string driverServiceName)
+    private static void PrepareInstallTargetForUpdate(
+        string targetRoot,
+        string serviceName,
+        string driverServiceName,
+        string installerRoot)
     {
         // Existing installs may have a running service, an orphaned worker, or an open UI process
         // loaded from the current install root. New payloads are versioned, so this is best-effort
-        // process cleanup rather than a prerequisite for copying files.
+        // process cleanup rather than a prerequisite for copying files. Never terminate the
+        // persistent GUI installer itself: if it launched this setup host, killing it with a
+        // process tree kill can also terminate the child setup process mid-repair.
         TryStopService(serviceName);
         if (IsServiceRunning(driverServiceName))
         {
             Console.WriteLine("[SecureVol] Existing minifilter is loaded; repair will leave the live driver in place until reboot.");
         }
 
-        TerminateProcessesUnderPath(targetRoot, TimeSpan.FromSeconds(15));
+        TerminateProcessesUnderPath(
+            targetRoot,
+            TimeSpan.FromSeconds(15),
+            [installerRoot]);
     }
 
     public static int Uninstall(InstallerPlan plan, UninstallOptions options)
@@ -1034,7 +1043,10 @@ internal static class InstallerEngine
             lastError);
     }
 
-    private static void TerminateProcessesUnderPath(string rootPath, TimeSpan timeout)
+    private static void TerminateProcessesUnderPath(
+        string rootPath,
+        TimeSpan timeout,
+        IReadOnlyCollection<string>? excludedRoots = null)
     {
         if (!Directory.Exists(rootPath))
         {
@@ -1042,12 +1054,16 @@ internal static class InstallerEngine
         }
 
         var normalizedRoot = EnsureTrailingSeparator(Path.GetFullPath(rootPath));
+        var normalizedExcludedRoots = (excludedRoots ?? [])
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => EnsureTrailingSeparator(Path.GetFullPath(path)))
+            .ToArray();
         var currentProcessId = Environment.ProcessId;
         var deadline = DateTime.UtcNow + timeout;
 
         while (DateTime.UtcNow < deadline)
         {
-            var matchingProcesses = GetProcessesUnderPath(normalizedRoot, currentProcessId);
+            var matchingProcesses = GetProcessesUnderPath(normalizedRoot, currentProcessId, normalizedExcludedRoots);
             if (matchingProcesses.Count == 0)
             {
                 return;
@@ -1082,7 +1098,7 @@ internal static class InstallerEngine
             Thread.Sleep(500);
         }
 
-        var survivors = GetProcessesUnderPath(normalizedRoot, currentProcessId);
+        var survivors = GetProcessesUnderPath(normalizedRoot, currentProcessId, normalizedExcludedRoots);
         if (survivors.Count == 0)
         {
             return;
@@ -1101,7 +1117,10 @@ internal static class InstallerEngine
             $"Timed out waiting for existing SecureVol processes to exit from '{rootPath}'. Remaining processes: {summary}");
     }
 
-    private static List<Process> GetProcessesUnderPath(string normalizedRoot, int currentProcessId)
+    private static List<Process> GetProcessesUnderPath(
+        string normalizedRoot,
+        int currentProcessId,
+        IReadOnlyCollection<string> normalizedExcludedRoots)
     {
         var result = new List<Process>();
 
@@ -1123,7 +1142,11 @@ internal static class InstallerEngine
                 }
 
                 var normalizedProcessPath = Path.GetFullPath(processPath);
-                if (normalizedProcessPath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+                if (normalizedExcludedRoots.Any(excluded => normalizedProcessPath.StartsWith(excluded, StringComparison.OrdinalIgnoreCase)))
+                {
+                    process.Dispose();
+                }
+                else if (normalizedProcessPath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
                 {
                     result.Add(process);
                 }
