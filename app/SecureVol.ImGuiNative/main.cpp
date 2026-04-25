@@ -210,7 +210,7 @@ struct AddRuleDraft
     std::array<char, 256> Publisher{};
     std::array<char, 256> User{};
     std::array<char, 128> Sha256{};
-    bool RequireSignature{ true };
+    bool RequireSignature{ false };
 
     void Reset(std::string_view defaultUser)
     {
@@ -219,7 +219,7 @@ struct AddRuleDraft
         Publisher.fill('\0');
         User.fill('\0');
         Sha256.fill('\0');
-        RequireSignature = true;
+        RequireSignature = false;
         std::snprintf(User.data(), User.size(), "%s", std::string(defaultUser).c_str());
     }
 };
@@ -1113,6 +1113,8 @@ static bool EnsurePolicySkeleton(JsonObject& policy, DashboardSnapshot const& ba
     return true;
 }
 
+static void SetOptionalString(JsonObject& object, wchar_t const* key, std::string_view value);
+
 static bool ApplyLocalVolumeSetting(std::string const& mountPoint, DashboardSnapshot const& baseline, std::string& error)
 {
     auto normalizedMountPoint = NormalizeDriveRoot(mountPoint);
@@ -1247,6 +1249,87 @@ static bool ApplyLocalProtectionSetting(bool enabled, DashboardSnapshot const& b
         "{"
         + JsonField("enabled", enabled) + ","
         + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + ","
+        + JsonField("error", error)
+        + "}");
+    return saved;
+}
+
+static bool ApplyLocalAllowRuleSetting(AddRuleDraft const& draft, DashboardSnapshot const& baseline, std::string& error)
+{
+    auto name = Trim(draft.Name.data());
+    auto imagePath = Trim(draft.ImagePath.data());
+    if (name.empty() || imagePath.empty())
+    {
+        error = "Rule name and executable path are required.";
+        return false;
+    }
+
+    LogAdminTrace(
+        "rule.policy.write.start",
+        "{"
+        + JsonField("name", name) + ","
+        + JsonField("imagePath", imagePath) + ","
+        + JsonField("requireSignature", draft.RequireSignature) + ","
+        + JsonField("policyPath", WideToUtf8(PolicyPath().wstring()))
+        + "}");
+
+    JsonObject policy;
+    if (auto loaded = LoadJsonFile(PolicyPath(), error))
+    {
+        policy = *loaded;
+        LogAdminTrace("rule.policy.loaded", "{" + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + "}");
+    }
+    else
+    {
+        LogAdminTrace(
+            "rule.policy.load.failed_using_empty",
+            "{"
+            + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + ","
+            + JsonField("error", error)
+            + "}");
+        error.clear();
+        policy = JsonObject{};
+    }
+
+    EnsurePolicySkeleton(policy, baseline);
+
+    JsonArray updatedRules;
+    if (auto existingRules = TryGetArray(policy, L"allowRules"))
+    {
+        for (auto const& value : *existingRules)
+        {
+            if (value.ValueType() != JsonValueType::Object)
+            {
+                continue;
+            }
+
+            auto existing = value.GetObject();
+            if (JsonString(existing, L"name") == name)
+            {
+                continue;
+            }
+
+            updatedRules.Append(value);
+        }
+    }
+
+    JsonObject rule;
+    rule.Insert(L"name", JsonValue::CreateStringValue(to_hstring(name)));
+    rule.Insert(L"imagePath", JsonValue::CreateStringValue(to_hstring(imagePath)));
+    rule.Insert(L"requireSignature", JsonValue::CreateBooleanValue(draft.RequireSignature));
+    SetOptionalString(rule, L"publisher", draft.Publisher.data());
+    SetOptionalString(rule, L"expectedUser", draft.User.data());
+    SetOptionalString(rule, L"sha256", draft.Sha256.data());
+    SetOptionalString(rule, L"notes", "");
+    updatedRules.Append(rule);
+
+    policy.Insert(L"allowRules", updatedRules);
+    auto saved = SaveJsonFile(PolicyPath(), policy, error);
+    LogAdminTrace(
+        saved ? "rule.policy.write.success" : "rule.policy.write.failed",
+        "{"
+        + JsonField("name", name) + ","
+        + JsonField("imagePath", imagePath) + ","
         + JsonField("error", error)
         + "}");
     return saved;
@@ -1501,6 +1584,44 @@ static OperationResult ExecuteCommandAndRefresh(JsonObject const& request, std::
 static OperationResult ExecuteProtectionChange(bool enabled, DashboardSnapshot baseline, std::string mountPoint)
 {
     return ApplyLocalProtectionChange(enabled, std::move(baseline), std::move(mountPoint));
+}
+
+static OperationResult ExecuteAllowRuleChange(AddRuleDraft draft, DashboardSnapshot baseline)
+{
+    std::string error;
+    if (!ApplyLocalAllowRuleSetting(draft, baseline, error))
+    {
+        auto snapshot = LoadLocalSnapshot();
+        snapshot.BackendLabel = "cached";
+        snapshot.LiveBackend = false;
+        snapshot.PipeUp = false;
+        return { false, "Failed to save allow rule: " + error, std::move(snapshot), true };
+    }
+
+    std::vector<std::string> actions{ "policy saved locally" };
+    if (baseline.ProtectionEnabled)
+    {
+        auto mountPoint = NormalizeDriveRoot(baseline.ProtectedMountPoint);
+        std::string cliError;
+        if (TryRunCliProtectionChange(true, mountPoint, cliError))
+        {
+            actions.push_back("driver policy refreshed");
+        }
+        else
+        {
+            actions.push_back("driver refresh pending (" + cliError + ")");
+        }
+    }
+    else
+    {
+        actions.push_back("protection is off");
+    }
+
+    auto snapshot = LoadLocalSnapshot();
+    snapshot.BackendLabel = "cached";
+    snapshot.LiveBackend = false;
+    snapshot.PipeUp = false;
+    return { true, "Rule saved: " + JoinCsv(actions) + ".", std::move(snapshot), true };
 }
 
 static OperationResult ExecuteSetVolumeChange(std::string mountPoint, DashboardSnapshot baseline)
@@ -2341,21 +2462,9 @@ static void DrawAddRulePopup(AppState& state)
 
     if (ImGui::Button("Save"))
     {
-        JsonObject request;
-        request.Insert(L"command", JsonValue::CreateStringValue(L"add-rule"));
-
-        JsonObject rule;
-        rule.Insert(L"name", JsonValue::CreateStringValue(to_hstring(state.Draft.Name.data())));
-        rule.Insert(L"imagePath", JsonValue::CreateStringValue(to_hstring(state.Draft.ImagePath.data())));
-        rule.Insert(L"requireSignature", JsonValue::CreateBooleanValue(state.Draft.RequireSignature));
-        SetOptionalString(rule, L"publisher", state.Draft.Publisher.data());
-        SetOptionalString(rule, L"expectedUser", state.Draft.User.data());
-        SetOptionalString(rule, L"sha256", state.Draft.Sha256.data());
-        SetOptionalString(rule, L"notes", "");
-
-        request.Insert(L"rule", rule);
-
-        StartOperation(state, "Saving allow rule...", [request] { return ExecuteCommandAndRefresh(request, "Rule saved."); });
+        auto draft = state.Draft;
+        auto baseline = state.Snapshot;
+        StartOperation(state, "Saving allow rule...", [draft, baseline] { return ExecuteAllowRuleChange(draft, baseline); });
         ImGui::CloseCurrentPopup();
     }
 

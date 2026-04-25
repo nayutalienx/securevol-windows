@@ -9,12 +9,18 @@ namespace SecureVol.Service;
 
 public sealed class AdminPipeServer : BackgroundService
 {
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(5);
     private readonly SecureVolCoordinator _coordinator;
+    private readonly SecureVol.Common.Logging.JsonFileLogger _fileLogger;
     private readonly ILogger<AdminPipeServer> _logger;
 
-    public AdminPipeServer(SecureVolCoordinator coordinator, ILogger<AdminPipeServer> logger)
+    public AdminPipeServer(
+        SecureVolCoordinator coordinator,
+        SecureVol.Common.Logging.JsonFileLogger fileLogger,
+        ILogger<AdminPipeServer> logger)
     {
         _coordinator = coordinator;
+        _fileLogger = fileLogger;
         _logger = logger;
     }
 
@@ -72,21 +78,32 @@ public sealed class AdminPipeServer : BackgroundService
                 }
 
                 AdminResponse response;
+                string command = "unknown";
+                var started = DateTimeOffset.UtcNow;
                 try
                 {
                     var request = JsonSerializer.Deserialize<AdminRequest>(requestJson, SecureVol.Common.Policy.PolicyConfig.JsonOptions());
+                    command = request?.Command ?? "invalid";
+                    await LogRequestAsync("admin-request-start", command, started, null, stoppingToken).ConfigureAwait(false);
                     response = request is null
                         ? new AdminResponse { Success = false, Message = "Invalid request payload." }
-                        : await _coordinator.HandleAdminRequestAsync(request, stoppingToken).ConfigureAwait(false);
+                        : await HandleRequestWithTimeoutAsync(request, stoppingToken).ConfigureAwait(false);
+                    await LogRequestAsync("admin-request-finish", command, started, response.Message, stoppingToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     throw;
                 }
+                catch (TimeoutException)
+                {
+                    response = new AdminResponse { Success = false, Message = $"Admin request '{command}' timed out after {RequestTimeout.TotalSeconds:0}s." };
+                    await LogRequestAsync("admin-request-timeout", command, started, response.Message, stoppingToken).ConfigureAwait(false);
+                }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Admin request failed.");
                     response = new AdminResponse { Success = false, Message = ex.Message };
+                    await LogRequestAsync("admin-request-error", command, started, ex.Message, stoppingToken).ConfigureAwait(false);
                 }
 
                 var responseJson = JsonSerializer.Serialize(response, SecureVol.Common.Policy.PolicyConfig.JsonOptions());
@@ -108,6 +125,34 @@ public sealed class AdminPipeServer : BackgroundService
                 writer?.Dispose();
             }
         }
+    }
+
+    private async Task<AdminResponse> HandleRequestWithTimeoutAsync(AdminRequest request, CancellationToken stoppingToken)
+    {
+        using var timeout = new CancellationTokenSource(RequestTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, timeout.Token);
+
+        try
+        {
+            return await _coordinator.HandleAdminRequestAsync(request, linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+        {
+            throw new TimeoutException();
+        }
+    }
+
+    private Task LogRequestAsync(string evt, string command, DateTimeOffset started, string? message, CancellationToken cancellationToken)
+    {
+        return _fileLogger.WriteAsync(new
+        {
+            ts = DateTimeOffset.UtcNow,
+            level = evt.EndsWith("error", StringComparison.OrdinalIgnoreCase) || evt.EndsWith("timeout", StringComparison.OrdinalIgnoreCase) ? "warning" : "info",
+            evt,
+            command,
+            elapsedMs = (long)(DateTimeOffset.UtcNow - started).TotalMilliseconds,
+            message
+        }, cancellationToken);
     }
 
     private static bool IsBrokenPipe(IOException ex)

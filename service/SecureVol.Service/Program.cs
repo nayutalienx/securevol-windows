@@ -15,9 +15,9 @@ builder.Services.AddSingleton<WindowsEventLogger>();
 builder.Services.AddSingleton<IProcessIdentityResolver, ProcessIdentityResolver>();
 builder.Services.AddSingleton<PolicyEngine>();
 builder.Services.AddSingleton<SecureVolCoordinator>();
-builder.Services.AddHostedService<SecureVolWorker>();
 builder.Services.AddHostedService<AdminPipeServer>();
 builder.Services.AddHostedService<PolicyFileWatcher>();
 builder.Services.AddHostedService<MountedVolumeWatcher>();
+builder.Services.AddHostedService<SecureVolWorker>();
 
 await builder.Build().RunAsync();
