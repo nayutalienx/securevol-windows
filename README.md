@@ -51,7 +51,7 @@ Important for the current preview:
 - repair/update installs backend payloads into versioned directories under `C:\Program Files\SecureVol\payloads`, so a running old service cannot block copying the new release.
 - the installer can configure the SecureVol backend to start with Windows through both an automatic service and a visible `\SecureVol\StartBackend` scheduled task; the backend then loads the minifilter and reapplies the saved policy automatically.
 - `Update from GitHub` in the installer checks the public `nayutalienx/securevol-windows` releases API, downloads the newest `SecureVol.Installer-win-x64-*.zip` asset, extracts it, and starts the downloaded installer in automatic `repair` mode.
-- after install/repair, the GUI installer is persisted to `C:\Program Files\SecureVol\installer\SecureVol.Installer.exe`; the native admin UI has a `Update` button that launches that installer in GitHub update mode.
+- after install/repair, the GUI installer is persisted into a versioned directory under `C:\Program Files\SecureVol\installer-payloads`; the old fixed `C:\Program Files\SecureVol\installer` path is only a best-effort fallback, because Windows can lock it while the installer is running.
 
 ## Quick install on a new machine
 
@@ -66,7 +66,7 @@ Important for the current preview:
 
 Run the newer `SecureVol.Installer.exe` as Administrator and click `Repair`. The installer writes a fresh payload directory, points the Windows service at the new backend path, updates shortcuts, and only then tries to clean old payloads. If Windows still has the old backend loaded, cleanup is skipped and the installer reports `RebootRequired: True` instead of failing.
 
-For later updates, launch `SecureVol Installer` from the Start Menu or click `Update` in the native admin UI. This starts the persistent installer from `C:\Program Files\SecureVol\installer`, downloads the latest GitHub artifact, verifies its SHA-256 checksum from the release notes, and runs repair from the downloaded version.
+For later updates, launch `SecureVol Installer` from the Start Menu or click `Update` in the native admin UI. SecureVol resolves the newest versioned installer under `C:\Program Files\SecureVol\installer-payloads`, downloads the latest GitHub artifact, verifies its SHA-256 checksum from the release notes, and runs repair from the downloaded version. If the fixed legacy installer path still exists, treat it as fallback only, not as the current build.
 
 ## One-click diagnostics
 

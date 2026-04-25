@@ -77,14 +77,21 @@ internal static class InstallerEngine
         Console.WriteLine($"[SecureVol] Installing to '{targetRoot}'");
         Directory.CreateDirectory(targetRoot);
 
-        PrepareInstallTargetForUpdate(targetRoot, plan.ServiceName, plan.DriverServiceName, installLayout.InstallerRoot);
+        PrepareInstallTargetForUpdate(
+            targetRoot,
+            plan.ServiceName,
+            plan.DriverServiceName,
+            [installLayout.InstallerRoot, installLayout.InstallerPayloadsRoot]);
 
         CopyDirectory(Path.GetDirectoryName(plan.ServiceExecutable)!, installLayout.ServiceRoot);
         CopyDirectory(Path.GetDirectoryName(plan.CliExecutable)!, installLayout.CliRoot);
         CopyDirectory(Path.GetDirectoryName(plan.AppExecutable)!, installLayout.AppRoot);
         CopyDirectory(plan.SetupRoot, installLayout.SetupRoot);
         CopyDirectory(plan.DriverPackageDirectory, installLayout.DriverRoot);
-        TryPersistGuiInstaller(options.InstallerSourcePath, installLayout.InstallerRoot);
+        TryPersistGuiInstaller(
+            options.InstallerSourcePath,
+            installLayout.InstallerVersionRoot,
+            installLayout.InstallerRoot);
 
         EnsureDefaultPolicyFile();
         ImportDriverCertificateIfPresent(plan.DriverCertificatePath);
@@ -129,6 +136,7 @@ internal static class InstallerEngine
         }
 
         CleanupSupersededPayloads(targetRoot, installLayout.PayloadRoot);
+        CleanupSupersededInstallerPayloads(targetRoot, installLayout.InstallerVersionRoot);
 
         Console.WriteLine();
         Console.WriteLine("[SecureVol] Install summary");
@@ -159,7 +167,7 @@ internal static class InstallerEngine
         string targetRoot,
         string serviceName,
         string driverServiceName,
-        string installerRoot)
+        IReadOnlyCollection<string> installerRoots)
     {
         // Existing installs may have a running service, an orphaned worker, or an open UI process
         // loaded from the current install root. New payloads are versioned, so this is best-effort
@@ -175,7 +183,7 @@ internal static class InstallerEngine
         TerminateProcessesUnderPath(
             targetRoot,
             TimeSpan.FromSeconds(15),
-            [installerRoot]);
+            installerRoots);
     }
 
     public static int Uninstall(InstallerPlan plan, UninstallOptions options)
@@ -212,6 +220,7 @@ internal static class InstallerEngine
         TryDeleteDirectory(installLayout.ServiceRoot);
         TryDeleteDirectory(installLayout.DriverRoot);
         TryDeleteDirectory(installLayout.InstallerRoot);
+        TryDeleteDirectory(installLayout.InstallerPayloadsRoot);
         TryDeleteDirectory(Path.Combine(targetRoot, "payloads"));
 
         var runningFromInstallRoot = !string.IsNullOrWhiteSpace(Environment.ProcessPath) &&
@@ -435,7 +444,10 @@ internal static class InstallerEngine
         return !stopped && IsServiceRunning(serviceName);
     }
 
-    private static void TryPersistGuiInstaller(string? installerSourcePath, string installerRoot)
+    private static void TryPersistGuiInstaller(
+        string? installerSourcePath,
+        string versionedInstallerRoot,
+        string legacyInstallerRoot)
     {
         if (string.IsNullOrWhiteSpace(installerSourcePath))
         {
@@ -459,20 +471,39 @@ internal static class InstallerEngine
             }
 
             var normalizedSource = Path.GetFullPath(sourceRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var normalizedDestination = Path.GetFullPath(installerRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            if (string.Equals(normalizedSource, normalizedDestination, StringComparison.OrdinalIgnoreCase))
+            var normalizedVersionedDestination = Path.GetFullPath(versionedInstallerRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(normalizedSource, normalizedVersionedDestination, StringComparison.OrdinalIgnoreCase))
             {
-                Console.WriteLine("[SecureVol] GUI installer is already running from the persistent install location.");
+                Console.WriteLine("[SecureVol] GUI installer is already running from the current versioned install location.");
                 return;
             }
 
-            if (Directory.Exists(installerRoot))
+            CopyDirectory(sourceRoot, versionedInstallerRoot);
+            Console.WriteLine($"[SecureVol] Persisted versioned GUI installer to '{versionedInstallerRoot}'.");
+
+            // Keep the historical fixed path only as a convenience fallback. It may be locked by
+            // a currently running GUI installer, so failure here must never make repair/update fail.
+            var normalizedLegacyDestination = Path.GetFullPath(legacyInstallerRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(normalizedSource, normalizedLegacyDestination, StringComparison.OrdinalIgnoreCase))
             {
-                TryDeleteDirectory(installerRoot);
+                Console.WriteLine("[SecureVol] Legacy GUI installer path is the active source; leaving it in place.");
+                return;
             }
 
-            CopyDirectory(sourceRoot, installerRoot);
-            Console.WriteLine($"[SecureVol] Persisted GUI installer to '{installerRoot}'.");
+            try
+            {
+                if (Directory.Exists(legacyInstallerRoot))
+                {
+                    TryDeleteDirectory(legacyInstallerRoot);
+                }
+
+                CopyDirectory(sourceRoot, legacyInstallerRoot);
+                Console.WriteLine($"[SecureVol] Refreshed legacy GUI installer fallback at '{legacyInstallerRoot}'.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SecureVol] Legacy GUI installer fallback warning: {ex.Message}");
+            }
         }
         catch (Exception ex)
         {
@@ -1258,6 +1289,33 @@ internal static class InstallerEngine
         TryDeleteDirectory(Path.Combine(targetRoot, "driver"));
     }
 
+    private static void CleanupSupersededInstallerPayloads(string targetRoot, string currentInstallerRoot)
+    {
+        var installerPayloadsRoot = Path.Combine(targetRoot, "installer-payloads");
+        if (!Directory.Exists(installerPayloadsRoot))
+        {
+            return;
+        }
+
+        var normalizedCurrent = Path.GetFullPath(currentInstallerRoot).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+
+        foreach (var installerDirectory in Directory.EnumerateDirectories(installerPayloadsRoot))
+        {
+            var normalizedInstallerDirectory = Path.GetFullPath(installerDirectory).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar);
+
+            if (string.Equals(normalizedInstallerDirectory, normalizedCurrent, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            TryDeleteDirectory(installerDirectory);
+        }
+    }
+
     private static void RunProcess(string fileName, string arguments, string failureMessage)
     {
         var output = RunProcessCapture(fileName, arguments, allowNonZeroExit: true, out var exitCode);
@@ -1354,6 +1412,8 @@ internal static class InstallerEngine
         string DriverRoot,
         string SetupRoot,
         string InstallerRoot,
+        string InstallerPayloadsRoot,
+        string InstallerVersionRoot,
         string ServiceExecutable,
         string CliExecutable,
         string AppExecutable,
@@ -1370,6 +1430,8 @@ internal static class InstallerEngine
             var driverRoot = Path.Combine(normalizedRoot, "driver");
             var setupRoot = Path.Combine(normalizedRoot, "setup");
             var installerRoot = Path.Combine(normalizedRoot, "installer");
+            var installerPayloadsRoot = Path.Combine(normalizedRoot, "installer-payloads");
+            var installerVersionRoot = ResolveNewestInstallerRoot(installerPayloadsRoot) ?? installerRoot;
 
             return new InstalledLayout(
                 normalizedRoot,
@@ -1380,6 +1442,8 @@ internal static class InstallerEngine
                 driverRoot,
                 setupRoot,
                 installerRoot,
+                installerPayloadsRoot,
+                installerVersionRoot,
                 Path.Combine(serviceRoot, "SecureVol.Service.exe"),
                 Path.Combine(cliRoot, "securevol.exe"),
                 Directory.Exists(appRoot)
@@ -1389,7 +1453,7 @@ internal static class InstallerEngine
                     : Path.Combine(appRoot, "SecureVol.ImGui.exe"),
                 Path.Combine(driverRoot, "SecureVolFlt.inf"),
                 Path.Combine(setupRoot, "SecureVol.SetupHost.exe"),
-                Path.Combine(installerRoot, "SecureVol.Installer.exe"));
+                Path.Combine(installerVersionRoot, "SecureVol.Installer.exe"));
         }
 
         public static InstalledLayout CreateForInstall(string root)
@@ -1403,6 +1467,8 @@ internal static class InstallerEngine
             var driverRoot = Path.Combine(payloadRoot, "driver");
             var setupRoot = Path.Combine(payloadRoot, "setup");
             var installerRoot = Path.Combine(normalizedRoot, "installer");
+            var installerPayloadsRoot = Path.Combine(normalizedRoot, "installer-payloads");
+            var installerVersionRoot = Path.Combine(installerPayloadsRoot, payloadId);
 
             return new InstalledLayout(
                 normalizedRoot,
@@ -1413,12 +1479,29 @@ internal static class InstallerEngine
                 driverRoot,
                 setupRoot,
                 installerRoot,
+                installerPayloadsRoot,
+                installerVersionRoot,
                 Path.Combine(serviceRoot, "SecureVol.Service.exe"),
                 Path.Combine(cliRoot, "securevol.exe"),
                 Path.Combine(appRoot, "SecureVol.ImGui.exe"),
                 Path.Combine(driverRoot, "SecureVolFlt.inf"),
                 Path.Combine(setupRoot, "SecureVol.SetupHost.exe"),
-                Path.Combine(installerRoot, "SecureVol.Installer.exe"));
+                Path.Combine(installerVersionRoot, "SecureVol.Installer.exe"));
+        }
+
+        private static string? ResolveNewestInstallerRoot(string installerPayloadsRoot)
+        {
+            if (!Directory.Exists(installerPayloadsRoot))
+            {
+                return null;
+            }
+
+            return Directory.EnumerateFiles(installerPayloadsRoot, "SecureVol.Installer.exe", SearchOption.AllDirectories)
+                .Select(path => new FileInfo(path))
+                .Where(file => file.Exists)
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Select(file => file.DirectoryName)
+                .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path));
         }
     }
 }

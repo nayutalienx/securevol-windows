@@ -192,6 +192,7 @@ struct PendingOperation
 
 static std::optional<JsonObject> TryAdminCommand(JsonObject const& request, std::string& error, DWORD timeoutMs);
 static OperationResult RefreshDashboard();
+static std::optional<fs::path> ResolveInstalledInstallerPath();
 static std::optional<fs::path> ResolveInstalledCliPath();
 
 struct AddRuleDraft
@@ -1204,14 +1205,59 @@ static void OpenShellPath(fs::path const& path)
     ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+static std::optional<fs::path> ResolveInstalledInstallerPath()
+{
+    auto installRoot = ProgramFilesRoot() / L"SecureVol";
+    auto installerPayloadsRoot = installRoot / L"installer-payloads";
+
+    std::optional<fs::path> newest;
+    fs::file_time_type newestTime{};
+    std::error_code ec;
+    if (fs::exists(installerPayloadsRoot, ec))
+    {
+        for (auto const& entry : fs::recursive_directory_iterator(installerPayloadsRoot, fs::directory_options::skip_permission_denied, ec))
+        {
+            if (ec)
+            {
+                break;
+            }
+
+            if (!entry.is_regular_file(ec) || entry.path().filename() != L"SecureVol.Installer.exe")
+            {
+                continue;
+            }
+
+            auto time = entry.last_write_time(ec);
+            if (!newest || (!ec && time > newestTime))
+            {
+                newest = entry.path();
+                newestTime = time;
+            }
+        }
+    }
+
+    if (newest)
+    {
+        return newest;
+    }
+
+    auto legacyInstaller = installRoot / L"installer" / L"SecureVol.Installer.exe";
+    if (fs::exists(legacyInstaller))
+    {
+        return legacyInstaller;
+    }
+
+    return std::nullopt;
+}
+
 static void LaunchInstalledInstallerUpdate()
 {
-    auto installerPath = ProgramFilesRoot() / L"SecureVol" / L"installer" / L"SecureVol.Installer.exe";
-    if (!fs::exists(installerPath))
+    auto installerPath = ResolveInstalledInstallerPath();
+    if (!installerPath)
     {
         MessageBoxW(
             nullptr,
-            L"SecureVol Installer was not found at C:\\Program Files\\SecureVol\\installer\\SecureVol.Installer.exe. Run the latest installer once, then click Repair so it can persist itself.",
+            L"SecureVol Installer was not found under C:\\Program Files\\SecureVol. Download the latest installer once and click Repair.",
             L"SecureVol",
             MB_OK | MB_ICONINFORMATION);
         return;
@@ -1220,9 +1266,9 @@ static void LaunchInstalledInstallerUpdate()
     auto result = ShellExecuteW(
         nullptr,
         L"runas",
-        installerPath.c_str(),
+        installerPath->c_str(),
         L"--autorun update --enable-testsigning --autostart",
-        installerPath.parent_path().c_str(),
+        installerPath->parent_path().c_str(),
         SW_SHOWNORMAL);
 
     if (reinterpret_cast<intptr_t>(result) <= 32)

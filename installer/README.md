@@ -10,7 +10,7 @@ Current state:
 - The GUI installer must run as Administrator. Install, repair, update, uninstall, service control, driver load, and protected-volume policy operations are elevated operations by design.
 - The GUI installer includes `Update from GitHub`, which downloads the newest public release asset matching `SecureVol.Installer-win-x64-*.zip`, extracts it, and launches that installer in automatic `repair` mode.
 - The GUI installer includes `Upload Diagnostics`, which collects a plain-text SecureVol state report and uploads it to a public paste endpoint so no manual log copying is needed.
-- Install/repair persists the GUI installer to `C:\Program Files\SecureVol\installer\SecureVol.Installer.exe`, creates a Start Menu shortcut for it, and lets the native admin UI launch it in GitHub update mode.
+- Install/repair persists the GUI installer to a versioned directory under `C:\Program Files\SecureVol\installer-payloads`, creates a Start Menu shortcut to the newest versioned copy, and lets the native admin UI launch that newest copy in GitHub update mode. The fixed `C:\Program Files\SecureVol\installer` path is only a best-effort legacy fallback because it can be locked by the running installer process.
 - Install and repair use versioned payload directories under `C:\Program Files\SecureVol\payloads` so a running old backend does not block the new release from being copied.
 - The GUI installer exposes `Start SecureVol backend automatically with Windows`, which maps to the setup host `--autostart` option and creates both an automatic service configuration and a visible `\SecureVol\StartBackend` scheduled task.
 - `scripts/Build-Release.ps1` produces a portable release layout with:
