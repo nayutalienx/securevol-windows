@@ -508,6 +508,13 @@ internal static class InstallerEngine
 
         if (IsServiceRunning(driverServiceName) && File.Exists(installedDriverBinary))
         {
+            if (FilesHaveSameSha256(packagedDriverBinary, installedDriverBinary))
+            {
+                Console.WriteLine("[SecureVol] SecureVolFlt is already loaded and the installed driver binary matches the packaged binary. Skipping reboot-deferred driver replacement.");
+                EnsureMinifilterServiceRegistration(driverServiceName, installedDriverBinary);
+                return false;
+            }
+
             Console.WriteLine("[SecureVol] SecureVolFlt is already loaded. Skipping live driver binary replacement.");
             ScheduleDriverReplacementOnReboot(packagedDriverBinary, installedDriverBinary);
             EnsureMinifilterServiceRegistration(driverServiceName, installedDriverBinary);
@@ -520,6 +527,16 @@ internal static class InstallerEngine
 
         EnsureMinifilterServiceRegistration(driverServiceName, installedDriverBinary);
         return false;
+    }
+
+    private static bool FilesHaveSameSha256(string leftPath, string rightPath)
+    {
+        using var left = File.OpenRead(leftPath);
+        using var right = File.OpenRead(rightPath);
+
+        var leftHash = System.Security.Cryptography.SHA256.HashData(left);
+        var rightHash = System.Security.Cryptography.SHA256.HashData(right);
+        return leftHash.AsSpan().SequenceEqual(rightHash);
     }
 
     private static void ScheduleDriverReplacementOnReboot(string sourceDriverBinary, string installedDriverBinary)
