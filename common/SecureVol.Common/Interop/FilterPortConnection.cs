@@ -90,7 +90,7 @@ public sealed class FilterPortConnection : IDisposable
         }
     }
 
-    public void SetPolicy(bool protectionEnabled, uint generation, string protectedVolumeGuid)
+    public DriverStateDto SetPolicy(bool protectionEnabled, uint generation, string protectedVolumeGuid)
     {
         var request = new SetPolicyMessage
         {
@@ -104,7 +104,8 @@ public sealed class FilterPortConnection : IDisposable
             ProtectedVolumeGuid = protectedVolumeGuid ?? string.Empty
         };
 
-        SendControlMessage(request, out DriverStateMessage _);
+        SendControlMessage(request, out DriverStateMessage response);
+        return ToDriverStateDto(response);
     }
 
     public DriverStateDto GetDriverState()
@@ -116,12 +117,7 @@ public sealed class FilterPortConnection : IDisposable
         };
 
         SendControlMessage(request, out DriverStateMessage response);
-        return new DriverStateDto(
-            response.ProtectionEnabled != 0,
-            response.ClientConnected != 0,
-            response.PolicyGeneration,
-            response.CacheEntryCount,
-            response.ProtectedVolumeGuid.TrimEnd('\0'));
+        return ToDriverStateDto(response);
     }
 
     public IReadOnlyList<RecentDenyEventDto> GetRecentDenies()
@@ -181,6 +177,14 @@ public sealed class FilterPortConnection : IDisposable
 
         response = Marshal.PtrToStructure<TResponse>(outBuffer.Pointer);
     }
+
+    private static DriverStateDto ToDriverStateDto(DriverStateMessage response) =>
+        new(
+            response.ProtectionEnabled != 0,
+            response.ClientConnected != 0,
+            response.PolicyGeneration,
+            response.CacheEntryCount,
+            response.ProtectedVolumeGuid.TrimEnd('\0'));
 
     public void Dispose()
     {

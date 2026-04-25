@@ -10,7 +10,6 @@ namespace SecureVol.Service;
 
 public sealed class SecureVolCoordinator
 {
-    private const int HResultFilterInstanceAlreadyExists = unchecked((int)0x801F0012);
     private const int MaxRecentDenyEvents = 128;
     private readonly PolicyEngine _policyEngine;
     private readonly JsonFileLogger _fileLogger;
@@ -23,6 +22,8 @@ public sealed class SecureVolCoordinator
     private PolicyConfig _policy = new();
     private uint _policyGeneration = 1;
     private FilterPortConnection? _driverConnection;
+    private DriverStateDto? _lastDriverState;
+    private string? _lastDriverPushError;
 
     public SecureVolCoordinator(
         PolicyEngine policyEngine,
@@ -121,76 +122,48 @@ public sealed class SecureVolCoordinator
         WriteStatusSnapshot();
     }
 
-    public async Task PushPolicyToDriverAsync(CancellationToken cancellationToken)
+    public async Task<bool> PushPolicyToDriverAsync(CancellationToken cancellationToken)
     {
         PolicyConfig policy;
         uint generation;
-        bool queryConnectionReady;
 
         await _policyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             policy = _policy;
             generation = _policyGeneration;
-            queryConnectionReady = _driverConnection is not null;
         }
         finally
         {
             _policyGate.Release();
         }
 
-        if (!queryConnectionReady)
+        try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            var state = await Task.Run(
+                    () => DriverPolicyController.PushPolicy(policy, generation, (uint)Environment.ProcessId),
+                    cancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken)
+                .ConfigureAwait(false);
+
+            _lastDriverState = state;
+            _lastDriverPushError = null;
             WriteStatusSnapshot();
-            return;
+            return true;
         }
-
-        cancellationToken.ThrowIfCancellationRequested();
-
-        TryEnsureFilterAttached(policy);
-
-        // The worker owns a long-lived query connection that blocks in FilterGetMessage.
-        // Control messages must use a separate short-lived filter port connection, otherwise
-        // admin commands can deadlock behind the receive loop.
-        using var controlConnection = FilterPortConnection.ConnectControl((uint)Environment.ProcessId);
-        controlConnection.SetPolicy(policy.ProtectionEnabled, generation, policy.NormalizedProtectedVolume);
-        WriteStatusSnapshot();
-    }
-
-    private void TryEnsureFilterAttached(PolicyConfig policy)
-    {
-        if (!policy.ProtectionEnabled)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return;
+            throw;
         }
-
-        var volumeName = ResolveAttachVolumeName(policy);
-        if (string.IsNullOrWhiteSpace(volumeName))
+        catch (Exception ex)
         {
-            _logger.LogWarning("SecureVol protection is enabled but no protected mount point or volume GUID is configured for filter attach.");
-            return;
+            _lastDriverPushError = ex.Message;
+            _logger.LogWarning(ex, "SecureVol could not push policy generation {Generation} directly to the minifilter.", generation);
+            _eventLogger.Warning($"SecureVol could not push policy generation {generation} to the minifilter: {ex.Message}");
+            WriteStatusSnapshot();
+            return false;
         }
-
-        var result = NativeMethods.FilterAttach("SecureVolFlt", volumeName, null, 0, IntPtr.Zero);
-        if (result == 0 || result == HResultFilterInstanceAlreadyExists)
-        {
-            return;
-        }
-
-        _logger.LogWarning("SecureVolFlt could not be attached to '{VolumeName}'. HRESULT=0x{Result:X8}", volumeName, result);
-        _eventLogger.Warning($"SecureVolFlt could not be attached to '{volumeName}'. HRESULT=0x{result:X8}");
-    }
-
-    private static string ResolveAttachVolumeName(PolicyConfig policy)
-    {
-        var mountPoint = policy.NormalizedProtectedMountPoint;
-        if (IsDriveRoot(mountPoint))
-        {
-            return mountPoint.TrimEnd('\\');
-        }
-
-        var volumeGuid = policy.NormalizedProtectedVolume;
-        return string.IsNullOrWhiteSpace(volumeGuid) ? string.Empty : volumeGuid;
     }
 
     public async Task<ProcessReplyMessage> EvaluateQueryAsync(ProcessAccessQuery message, CancellationToken cancellationToken)
@@ -274,9 +247,10 @@ public sealed class SecureVolCoordinator
             _policyGate.Release();
         }
 
+        var driverPushOk = true;
         if (pushToDriver)
         {
-            await PushPolicyToDriverAsync(cancellationToken).ConfigureAwait(false);
+            driverPushOk = await PushPolicyToDriverAsync(cancellationToken).ConfigureAwait(false);
         }
 
         await _fileLogger.WriteAsync(new
@@ -291,7 +265,13 @@ public sealed class SecureVolCoordinator
 
         _eventLogger.Info($"SecureVol policy reloaded. Generation={_policyGeneration}, ProtectedVolume='{_policy.NormalizedProtectedVolume}', Rules={_policy.AllowRules.Count}.");
         WriteStatusSnapshot();
-        return new AdminResponse { Success = true, Message = "Policy reloaded.", Policy = _policy };
+        return new AdminResponse
+        {
+            Success = driverPushOk,
+            Message = driverPushOk ? "Policy reloaded and pushed to driver." : $"Policy reloaded on disk, but driver push failed: {_lastDriverPushError}",
+            Policy = _policy,
+            State = BuildDriverState(_policy, _policyGeneration)
+        };
     }
 
     private async Task<AdminResponse> GetStateAsync(CancellationToken cancellationToken)
@@ -315,12 +295,7 @@ public sealed class SecureVolCoordinator
         // Do not send control messages over the same filter-port handle that the
         // worker thread uses for FilterGetMessage. That pattern can block admin
         // requests while the receive loop is waiting for kernel queries.
-        var state = new DriverStateDto(
-            policy.ProtectionEnabled,
-            driver is not null,
-            generation,
-            0,
-            policy.NormalizedProtectedVolume);
+        var state = BuildDriverState(policy, generation, driver is not null);
 
         return new AdminResponse
         {
@@ -351,12 +326,7 @@ public sealed class SecureVolCoordinator
             _policyGate.Release();
         }
 
-        var state = new DriverStateDto(
-            policy.ProtectionEnabled,
-            driver is not null,
-            generation,
-            0,
-            policy.NormalizedProtectedVolume);
+        var state = BuildDriverState(policy, generation, driver is not null);
 
         return new AdminResponse
         {
@@ -583,6 +553,24 @@ public sealed class SecureVolCoordinator
     private static bool IsDriveRoot(string value) =>
         value.Length == 3 && value[1] == ':' && value[2] == '\\';
 
+    private DriverStateDto BuildDriverState(PolicyConfig policy, uint generation, bool queryConnectedHint = false)
+    {
+        if (_lastDriverState is { } state)
+        {
+            return state with
+            {
+                ClientConnected = state.ClientConnected || queryConnectedHint || _driverConnection is not null
+            };
+        }
+
+        return new DriverStateDto(
+            policy.ProtectionEnabled,
+            queryConnectedHint || _driverConnection is not null,
+            generation,
+            0,
+            policy.NormalizedProtectedVolume);
+    }
+
     private static ProcessReplyMessage BuildReply(uint generation, AccessVerdict verdict, DecisionReason reason, string imagePath) =>
         new()
         {
@@ -602,7 +590,8 @@ public sealed class SecureVolCoordinator
     private void WriteStatusSnapshot()
     {
         PolicyConfig policy;
-        var driverConnected = _driverConnection is not null;
+        DriverStateDto? driverState = _lastDriverState;
+        var driverConnected = _driverConnection is not null || (driverState?.ClientConnected ?? false);
         uint generation;
 
         ExAcquire();
@@ -623,7 +612,8 @@ public sealed class SecureVolCoordinator
             DriverConnected = driverConnected,
             PolicyGeneration = generation,
             ProtectedVolume = policy.NormalizedProtectedVolume,
-            AllowRuleCount = policy.AllowRules.Count
+            AllowRuleCount = policy.AllowRules.Count,
+            LastError = _lastDriverPushError
         };
 
         snapshot.Save(AppPaths.StatusFilePath);

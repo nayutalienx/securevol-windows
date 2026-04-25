@@ -140,6 +140,7 @@ internal static class SecureVolCli
                 {
                     ProtectionEnabled = policy.ProtectionEnabled,
                     ProtectedVolume = policy.ProtectedVolume,
+                    ProtectedMountPoint = policy.ProtectedMountPoint,
                     DefaultExpectedUser = policy.DefaultExpectedUser,
                     AllowRules = updatedRules
                 };
@@ -157,6 +158,7 @@ internal static class SecureVolCli
                 {
                     ProtectionEnabled = policy.ProtectionEnabled,
                     ProtectedVolume = policy.ProtectedVolume,
+                    ProtectedMountPoint = policy.ProtectedMountPoint,
                     DefaultExpectedUser = policy.DefaultExpectedUser,
                     AllowRules = policy.AllowRules
                         .Where(rule => !string.Equals(rule.Name, name, StringComparison.OrdinalIgnoreCase))
@@ -236,18 +238,62 @@ internal static class SecureVolCli
             throw new InvalidOperationException("Missing protection subcommand.");
         }
 
+        var action = args[0].ToLowerInvariant();
+        if (action is not ("enable" or "disable"))
+        {
+            throw new InvalidOperationException("Usage: securevol protection enable|disable [--volume V:]");
+        }
+
         var policy = LoadOrCreatePolicy();
+        var requestedVolume = GetOption(args, "--volume");
+        var protectedVolume = policy.ProtectedVolume;
+        var protectedMountPoint = policy.ProtectedMountPoint;
+
+        if (!string.IsNullOrWhiteSpace(requestedVolume))
+        {
+            var normalizedVolume = PolicyConfig.NormalizeVolumeIdentifier(requestedVolume);
+            protectedMountPoint = IsDriveRoot(normalizedVolume) ? normalizedVolume : protectedMountPoint;
+            protectedVolume = VolumeHelpers.ResolveVolumeGuid(requestedVolume);
+        }
+        else if (action == "enable" && IsDriveRoot(policy.NormalizedProtectedMountPoint) && Directory.Exists(policy.NormalizedProtectedMountPoint))
+        {
+            protectedVolume = VolumeHelpers.ResolveVolumeGuid(policy.NormalizedProtectedMountPoint);
+        }
+
+        if (action == "enable" && string.IsNullOrWhiteSpace(PolicyConfig.NormalizeVolumeIdentifier(protectedVolume)))
+        {
+            throw new InvalidOperationException("Protection cannot be enabled because no protected volume is configured. Use --volume A: first.");
+        }
+
         policy = new PolicyConfig
         {
-            ProtectionEnabled = args[0].Equals("enable", StringComparison.OrdinalIgnoreCase),
-            ProtectedVolume = policy.ProtectedVolume,
+            ProtectionEnabled = action == "enable",
+            ProtectedVolume = protectedVolume,
+            ProtectedMountPoint = protectedMountPoint,
             DefaultExpectedUser = policy.DefaultExpectedUser,
             AllowRules = [.. policy.AllowRules]
         };
 
         policy.Save(AppPaths.PolicyFilePath);
+
+        TryStartServiceBestEffort();
+        var generation = NewPolicyGeneration();
+        DriverStateDto driverState;
+        try
+        {
+            driverState = DriverPolicyController.PushPolicy(policy, generation, (uint)Environment.ProcessId);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Policy file updated, but driver policy push failed: {ex.Message}");
+            return 1;
+        }
+
         await TryReloadAsync().ConfigureAwait(false);
         Console.WriteLine($"Protection enabled: {policy.ProtectionEnabled}");
+        Console.WriteLine($"Driver policy enabled: {driverState.ProtectionEnabled}");
+        Console.WriteLine($"Driver query client connected: {driverState.ClientConnected}");
+        Console.WriteLine($"Driver protected volume: {driverState.ProtectedVolumeGuid}");
         return 0;
     }
 
@@ -381,6 +427,28 @@ internal static class SecureVolCli
         return process.ExitCode;
     }
 
+    private static void TryStartServiceBestEffort()
+    {
+        try
+        {
+            var exitCode = RunProcess("sc.exe", "start SecureVolSvc");
+            if (exitCode is not (0 or 1056))
+            {
+                Console.WriteLine($"SecureVolSvc start returned exit code {exitCode}; continuing with direct driver policy push.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SecureVolSvc start skipped: {ex.Message}");
+        }
+    }
+
+    private static uint NewPolicyGeneration() =>
+        unchecked((uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+    private static bool IsDriveRoot(string value) =>
+        value.Length == 3 && value[1] == ':' && value[2] == '\\';
+
     private static string RequireOption(string[] args, string name) =>
         GetOption(args, name) ?? throw new InvalidOperationException($"Missing required option '{name}'.");
 
@@ -404,7 +472,7 @@ SecureVol CLI
   securevol volume set --volume V:
   securevol rule add --name chrome --image "C:\Program Files\Google\Chrome\Application\chrome.exe" --publisher "Google LLC" --user ".\vc_app" --require-signed
   securevol rule remove --name chrome
-  securevol protection enable|disable
+  securevol protection enable|disable [--volume V:]
   securevol reload
   securevol state
   securevol denies

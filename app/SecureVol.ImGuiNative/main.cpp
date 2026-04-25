@@ -161,6 +161,7 @@ struct PendingOperation
 
 static std::optional<JsonObject> TryAdminCommand(JsonObject const& request, std::string& error, DWORD timeoutMs);
 static OperationResult RefreshDashboard();
+static std::optional<fs::path> ResolveInstalledCliPath();
 
 struct AddRuleDraft
 {
@@ -789,26 +790,25 @@ static bool TryRunProcess(std::wstring fileName, std::wstring arguments, DWORD t
     return false;
 }
 
-static bool WaitForServiceStatusConfirmation(bool enabled, DWORD timeoutMs)
+static bool TryRunCliProtectionChange(bool enabled, std::string const& mountPoint, std::string& error)
 {
-    auto deadline = GetTickCount64() + timeoutMs;
-    while (GetTickCount64() < deadline)
+    auto cliPath = ResolveInstalledCliPath();
+    if (!cliPath)
     {
-        std::string error;
-        if (auto status = LoadJsonFile(StatusPath(), error))
-        {
-            auto policyEnabled = JsonBool(*status, L"policyProtectionEnabled", !enabled);
-            auto driverConnected = JsonBool(*status, L"driverConnected", false);
-            if (policyEnabled == enabled && (!enabled || driverConnected))
-            {
-                return true;
-            }
-        }
-
-        Sleep(250);
+        error = "securevol.exe was not found under C:\\Program Files\\SecureVol. Run installer Repair first.";
+        return false;
     }
 
-    return false;
+    auto normalizedMountPoint = NormalizeDriveRoot(mountPoint);
+    std::wstring arguments = enabled ? L"protection enable" : L"protection disable";
+    if (IsDriveRoot(normalizedMountPoint))
+    {
+        auto drive = normalizedMountPoint.substr(0, 2);
+        arguments += L" --volume ";
+        arguments += Utf8ToWide(drive);
+    }
+
+    return TryRunProcess(cliPath->wstring(), arguments, 10000, error, { 0 });
 }
 
 static bool EnsurePolicySkeleton(JsonObject& policy, DashboardSnapshot const& baseline)
@@ -901,7 +901,9 @@ static bool ApplyLocalProtectionSetting(bool enabled, DashboardSnapshot const& b
 
 static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapshot baseline, std::string mountPoint)
 {
-    if (enabled && Trim(mountPoint).empty() && Trim(baseline.ProtectedMountPoint).empty())
+    auto normalizedMountPoint = NormalizeDriveRoot(!Trim(mountPoint).empty() ? mountPoint : baseline.ProtectedMountPoint);
+
+    if (enabled && Trim(normalizedMountPoint).empty())
     {
         auto snapshot = LoadLocalSnapshot();
         snapshot.BackendLabel = "cached";
@@ -911,7 +913,7 @@ static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapsho
     }
 
     std::string error;
-    if (!ApplyLocalProtectionSetting(enabled, baseline, mountPoint, error))
+    if (!ApplyLocalProtectionSetting(enabled, baseline, normalizedMountPoint, error))
     {
         auto snapshot = LoadLocalSnapshot();
         snapshot.BackendLabel = "cached";
@@ -920,74 +922,26 @@ static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapsho
         return { false, (enabled ? "Failed to bind mounted drive and enable protection: " : "Failed to write policy.json: ") + error, std::move(snapshot), true };
     }
 
-    std::vector<std::string> actions{ "policy saved locally" };
-
-    if (QueryServiceStatusText(L"SecureVolSvc") != "Running")
+    std::string cliError;
+    if (!TryRunCliProtectionChange(enabled, normalizedMountPoint, cliError))
     {
-        std::string startError;
-        if (TryRunProcess(L"sc.exe", L"start SecureVolSvc", 2500, startError, { 0, 1056 }))
-        {
-            actions.push_back("service start requested");
-        }
-        else if (!startError.empty())
-        {
-            actions.push_back("service start pending (" + startError + ")");
-        }
+        auto snapshot = LoadLocalSnapshot();
+        snapshot.BackendLabel = "cached";
+        snapshot.LiveBackend = false;
+        snapshot.PipeUp = false;
+        return { false, "Policy file was updated, but direct driver push failed: " + cliError, std::move(snapshot), true };
     }
-
-    if (enabled && QueryServiceStatusText(L"SecureVolFlt") != "Running")
-    {
-        std::string loadError;
-        if (TryRunProcess(L"fltmc.exe", L"load SecureVolFlt", 2500, loadError, { 0 }))
-        {
-            actions.push_back("filter loaded");
-        }
-        else if (!loadError.empty())
-        {
-            actions.push_back("filter load pending (" + loadError + ")");
-        }
-    }
-
-    auto normalizedMountPoint = NormalizeDriveRoot(!Trim(mountPoint).empty() ? mountPoint : baseline.ProtectedMountPoint);
-    if (enabled && IsDriveRoot(normalizedMountPoint))
-    {
-        std::string attachError;
-        auto attachVolume = normalizedMountPoint;
-        attachVolume.pop_back();
-        if (TryRunProcess(L"fltmc.exe", L"attach SecureVolFlt " + Utf8ToWide(attachVolume), 2500, attachError, { 0 }))
-        {
-            actions.push_back("filter attached to " + attachVolume);
-        }
-        else if (!attachError.empty())
-        {
-            actions.push_back("filter attach checked (" + attachError + ")");
-        }
-    }
-
-    std::string reloadError;
-    JsonObject reloadRequest;
-    reloadRequest.Insert(L"command", JsonValue::CreateStringValue(L"reload"));
-    if (auto response = TryAdminCommand(reloadRequest, reloadError, 3000))
-    {
-        actions.push_back(JsonBool(*response, L"success", false) ? "backend reload confirmed" : "backend reload rejected");
-    }
-    else if (!reloadError.empty())
-    {
-        actions.push_back("backend reload pending (" + reloadError + ")");
-    }
-
-    auto confirmed = WaitForServiceStatusConfirmation(enabled, 2500);
 
     auto snapshot = LoadLocalSnapshot();
-    snapshot.BackendLabel = "cached";
+    snapshot.BackendLabel = "driver-pushed";
     snapshot.LiveBackend = false;
     snapshot.PipeUp = false;
 
-    auto confirmationText = confirmed ? "confirmed by local service state." : "waiting for service file watcher; click Sync in a few seconds.";
-
     OperationResult result;
     result.Success = true;
-    result.Message = (enabled ? "Protection enabled locally: " : "Protection paused locally: ") + JoinCsv(actions) + ", " + confirmationText;
+    result.Message = enabled
+        ? "Protection enabled: policy saved and pushed directly to the minifilter."
+        : "Protection disabled: policy saved and pushed directly to the minifilter.";
     result.Snapshot = std::move(snapshot);
     result.HasSnapshot = true;
     return result;
@@ -1534,7 +1488,7 @@ static void DrawHeader(AppState& state)
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("SecureVol");
         ImGui::SameLine();
-        ImGui::TextDisabled("compact-main v12");
+        ImGui::TextDisabled("compact-main v13");
         ImGui::TextDisabled("backend: %s", state.Snapshot.BackendLabel.c_str());
         DrawEllipsizedText(state.StatusLine, 44, true);
 

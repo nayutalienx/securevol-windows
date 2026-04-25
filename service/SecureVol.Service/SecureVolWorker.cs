@@ -37,6 +37,11 @@ public sealed class SecureVolWorker : BackgroundService
                     continue;
                 }
 
+                // Push file policy into the driver before the long-lived query
+                // channel is established. This prevents "policy enabled on disk,
+                // driver still disabled" after reboot or service reconnect issues.
+                await _coordinator.PushPolicyToDriverAsync(stoppingToken).ConfigureAwait(false);
+
                 connection = FilterPortConnection.ConnectQuery((uint)Environment.ProcessId);
                 _coordinator.AttachDriver(connection);
                 await _coordinator.PushPolicyToDriverAsync(stoppingToken).ConfigureAwait(false);

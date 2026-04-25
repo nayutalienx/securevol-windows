@@ -82,6 +82,13 @@ The uploaded report can include local paths, Windows user names, configured allo
 
 When the installer option `Start SecureVol backend automatically with Windows` is enabled, `SecureVolSvc` is configured as an automatic Windows service and the installer also creates a visible `\SecureVol\StartBackend` scheduled task that runs `sc.exe start SecureVolSvc` at system startup. The service loads `SecureVolFlt`, explicitly attaches the minifilter to the configured mounted drive when protection is enabled, pushes the saved policy to the driver, and keeps watching the configured mount point such as `A:\`. If the VeraCrypt container is mounted after Windows starts, the service resolves the current volume GUID for that mount point and updates the driver policy without requiring repair. The native admin `On` and drive `Apply` actions also resolve the current drive letter locally before writing policy, so they do not depend on a live backend pipe just to bind `A:` to the correct volume GUID.
 
+If the admin pipe is degraded, protection can still be forced through the CLI as Administrator. This path writes `policy.json`, starts the backend service best-effort, loads and attaches the minifilter, and sends `SetPolicy` directly to the driver control port:
+
+```powershell
+securevol protection enable --volume A:
+securevol protection disable --volume A:
+```
+
 ## Project status
 
 SecureVol is already usable as a local defensive tool, but it is still in productization:
