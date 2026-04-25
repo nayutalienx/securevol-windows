@@ -80,6 +80,15 @@ securevol diagnostics upload --open
 
 The uploaded report can include local paths, Windows user names, configured allow rules, volume IDs, service/driver state, `fltmc` output, and recent SecureVol logs. Use it only when you intend to share that diagnostic state.
 
+## Protection Trace Logs
+
+The native admin `On` / `Off` controls and the CLI `securevol protection enable|disable` path write direct JSONL traces that do not depend on the backend pipe:
+
+- `C:\ProgramData\SecureVol\logs\securevol-admin-ui-protection.jsonl`
+- `C:\ProgramData\SecureVol\logs\securevol-cli-protection.jsonl`
+
+These logs record release tag, process ID, elevation state, selected volume, policy save, service start attempt, driver load/attach/push, reload, and the exact exception text when a step fails. If a protection operation fails, the admin UI also copies a compact failure report to the clipboard with these log paths.
+
 ## Startup And Remount Behavior
 
 When the installer option `Start SecureVol backend automatically with Windows` is enabled, `SecureVolSvc` is configured as an automatic Windows service and the installer also creates a visible `\SecureVol\StartBackend` scheduled task that runs `sc.exe start SecureVolSvc` at system startup. The service loads `SecureVolFlt`, explicitly attaches the minifilter to the configured mounted drive when protection is enabled, pushes the saved policy to the driver, and keeps watching the configured mount point such as `A:\`. If the VeraCrypt container is mounted after Windows starts, the service resolves the current volume GUID for that mount point and updates the driver policy without requiring repair. The native admin `On` and drive `Apply` actions also resolve the current drive letter locally before writing policy, so they do not depend on a live backend pipe just to bind `A:` to the correct volume GUID.

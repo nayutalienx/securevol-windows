@@ -26,6 +26,7 @@
 #include <fstream>
 #include <functional>
 #include <future>
+#include <sstream>
 #include <numeric>
 #include <optional>
 #include <ranges>
@@ -354,6 +355,113 @@ static fs::path ProgramDataRoot()
 static fs::path ConfigDirectory()
 {
     return ProgramDataRoot() / L"config";
+}
+
+static fs::path LogDirectory()
+{
+    return ProgramDataRoot() / L"logs";
+}
+
+static fs::path AdminProtectionTraceLogPath()
+{
+    return LogDirectory() / L"securevol-admin-ui-protection.jsonl";
+}
+
+static std::string UtcTimestamp()
+{
+    SYSTEMTIME now{};
+    GetSystemTime(&now);
+    char buffer[40]{};
+    std::snprintf(
+        buffer,
+        sizeof(buffer),
+        "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",
+        now.wYear,
+        now.wMonth,
+        now.wDay,
+        now.wHour,
+        now.wMinute,
+        now.wSecond,
+        now.wMilliseconds);
+    return buffer;
+}
+
+static std::string JsonEscape(std::string_view value)
+{
+    std::string output;
+    output.reserve(value.size() + 16);
+    for (auto ch : value)
+    {
+        switch (ch)
+        {
+        case '\\':
+            output += "\\\\";
+            break;
+        case '"':
+            output += "\\\"";
+            break;
+        case '\n':
+            output += "\\n";
+            break;
+        case '\r':
+            output += "\\r";
+            break;
+        case '\t':
+            output += "\\t";
+            break;
+        default:
+            output += ch;
+            break;
+        }
+    }
+
+    return output;
+}
+
+static std::string JsonField(std::string_view key, std::string_view value)
+{
+    return "\"" + std::string(key) + "\":\"" + JsonEscape(value) + "\"";
+}
+
+static std::string JsonField(std::string_view key, bool value)
+{
+    return "\"" + std::string(key) + "\":" + (value ? "true" : "false");
+}
+
+static std::string JsonField(std::string_view key, uint32_t value)
+{
+    return "\"" + std::string(key) + "\":" + std::to_string(value);
+}
+
+static std::string JsonField(std::string_view key, DWORD value)
+{
+    return "\"" + std::string(key) + "\":" + std::to_string(value);
+}
+
+static void LogAdminTrace(std::string_view eventName, std::string detailsJson = "{}")
+{
+    try
+    {
+        fs::create_directories(LogDirectory());
+        std::ofstream log(AdminProtectionTraceLogPath(), std::ios::app | std::ios::binary);
+        if (!log)
+        {
+            return;
+        }
+
+        log << "{"
+            << JsonField("timestampUtc", UtcTimestamp()) << ","
+            << JsonField("releaseTag", kSecureVolReleaseTag) << ","
+            << JsonField("pid", GetCurrentProcessId()) << ","
+            << JsonField("process", WideToUtf8(GetCommandLineW())) << ","
+            << JsonField("event", eventName) << ","
+            << "\"details\":" << (detailsJson.empty() ? "{}" : detailsJson)
+            << "}\n";
+    }
+    catch (...)
+    {
+        // Tracing must never break protection controls.
+    }
 }
 
 static fs::path ProgramFilesRoot()
@@ -806,8 +914,37 @@ static DashboardSnapshot SnapshotFromDashboardResponse(JsonObject const& respons
     return snapshot;
 }
 
+static std::string SnapshotTraceJson(DashboardSnapshot const& snapshot)
+{
+    return "{"
+        + JsonField("hasPolicy", snapshot.HasPolicy) + ","
+        + JsonField("liveBackend", snapshot.LiveBackend) + ","
+        + JsonField("pipeUp", snapshot.PipeUp) + ","
+        + JsonField("protectionEnabled", snapshot.ProtectionEnabled) + ","
+        + JsonField("driverConnected", snapshot.DriverConnected) + ","
+        + JsonField("policyGeneration", snapshot.PolicyGeneration) + ","
+        + JsonField("cacheEntryCount", snapshot.CacheEntryCount) + ","
+        + JsonField("protectedVolume", snapshot.ProtectedVolume) + ","
+        + JsonField("protectedMountPoint", snapshot.ProtectedMountPoint) + ","
+        + JsonField("defaultExpectedUser", snapshot.DefaultExpectedUser) + ","
+        + JsonField("serviceStatus", snapshot.ServiceStatus) + ","
+        + JsonField("driverStatus", snapshot.DriverStatus) + ","
+        + JsonField("backendLabel", snapshot.BackendLabel) + ","
+        + JsonField("backendError", snapshot.BackendError) + ","
+        + JsonField("ruleCount", static_cast<uint32_t>(snapshot.Rules.size()))
+        + "}";
+}
+
 static bool TryRunProcess(std::wstring fileName, std::wstring arguments, DWORD timeoutMs, std::string& error, std::initializer_list<DWORD> successExitCodes = { 0 })
 {
+    LogAdminTrace(
+        "process.start",
+        "{"
+        + JsonField("fileName", WideToUtf8(fileName)) + ","
+        + JsonField("arguments", WideToUtf8(arguments)) + ","
+        + JsonField("timeoutMs", timeoutMs)
+        + "}");
+
     STARTUPINFOW startupInfo{};
     startupInfo.cb = sizeof(startupInfo);
     startupInfo.dwFlags = STARTF_USESHOWWINDOW;
@@ -837,17 +974,37 @@ static bool TryRunProcess(std::wstring fileName, std::wstring arguments, DWORD t
             &processInfo))
     {
         error = FormatWin32Error(GetLastError());
+        LogAdminTrace(
+            "process.create.failed",
+            "{"
+            + JsonField("fileName", WideToUtf8(fileName)) + ","
+            + JsonField("arguments", WideToUtf8(arguments)) + ","
+            + JsonField("error", error)
+            + "}");
         return false;
     }
 
     ScopedHandle process(processInfo.hProcess);
     ScopedHandle thread(processInfo.hThread);
+    LogAdminTrace(
+        "process.created",
+        "{"
+        + JsonField("fileName", WideToUtf8(fileName)) + ","
+        + JsonField("pid", processInfo.dwProcessId)
+        + "}");
 
     auto waitResult = WaitForSingleObject(process.Value, timeoutMs);
     if (waitResult == WAIT_TIMEOUT)
     {
         TerminateProcess(process.Value, 1);
         error = WideToUtf8(fileName) + " timed out.";
+        LogAdminTrace(
+            "process.timeout",
+            "{"
+            + JsonField("fileName", WideToUtf8(fileName)) + ","
+            + JsonField("pid", processInfo.dwProcessId) + ","
+            + JsonField("timeoutMs", timeoutMs)
+            + "}");
         return false;
     }
 
@@ -855,15 +1012,36 @@ static bool TryRunProcess(std::wstring fileName, std::wstring arguments, DWORD t
     if (!GetExitCodeProcess(process.Value, &exitCode))
     {
         error = FormatWin32Error(GetLastError());
+        LogAdminTrace(
+            "process.exitcode.failed",
+            "{"
+            + JsonField("fileName", WideToUtf8(fileName)) + ","
+            + JsonField("pid", processInfo.dwProcessId) + ","
+            + JsonField("error", error)
+            + "}");
         return false;
     }
 
     if (std::find(successExitCodes.begin(), successExitCodes.end(), exitCode) != successExitCodes.end())
     {
+        LogAdminTrace(
+            "process.exit.success",
+            "{"
+            + JsonField("fileName", WideToUtf8(fileName)) + ","
+            + JsonField("pid", processInfo.dwProcessId) + ","
+            + JsonField("exitCode", exitCode)
+            + "}");
         return true;
     }
 
     error = WideToUtf8(fileName) + " exited with code " + std::to_string(exitCode) + ".";
+    LogAdminTrace(
+        "process.exit.failed",
+        "{"
+        + JsonField("fileName", WideToUtf8(fileName)) + ","
+        + JsonField("pid", processInfo.dwProcessId) + ","
+        + JsonField("exitCode", exitCode)
+        + "}");
     return false;
 }
 
@@ -873,6 +1051,13 @@ static bool TryRunCliProtectionChange(bool enabled, std::string const& mountPoin
     if (!cliPath)
     {
         error = "securevol.exe was not found under C:\\Program Files\\SecureVol. Run installer Repair first.";
+        LogAdminTrace(
+            "protection.cli.resolve.failed",
+            "{"
+            + JsonField("enabled", enabled) + ","
+            + JsonField("mountPoint", mountPoint) + ","
+            + JsonField("error", error)
+            + "}");
         return false;
     }
 
@@ -885,7 +1070,25 @@ static bool TryRunCliProtectionChange(bool enabled, std::string const& mountPoin
         arguments += Utf8ToWide(drive);
     }
 
-    return TryRunProcess(cliPath->wstring(), arguments, 10000, error, { 0 });
+    LogAdminTrace(
+        "protection.cli.invoke",
+        "{"
+        + JsonField("enabled", enabled) + ","
+        + JsonField("mountPoint", mountPoint) + ","
+        + JsonField("normalizedMountPoint", normalizedMountPoint) + ","
+        + JsonField("cliPath", WideToUtf8(cliPath->wstring())) + ","
+        + JsonField("arguments", WideToUtf8(arguments))
+        + "}");
+
+    auto ok = TryRunProcess(cliPath->wstring(), arguments, 10000, error, { 0 });
+    LogAdminTrace(
+        ok ? "protection.cli.success" : "protection.cli.failed",
+        "{"
+        + JsonField("enabled", enabled) + ","
+        + JsonField("cliPath", WideToUtf8(cliPath->wstring())) + ","
+        + JsonField("error", error)
+        + "}");
+    return ok;
 }
 
 static bool EnsurePolicySkeleton(JsonObject& policy, DashboardSnapshot const& baseline)
@@ -913,19 +1116,48 @@ static bool EnsurePolicySkeleton(JsonObject& policy, DashboardSnapshot const& ba
 static bool ApplyLocalVolumeSetting(std::string const& mountPoint, DashboardSnapshot const& baseline, std::string& error)
 {
     auto normalizedMountPoint = NormalizeDriveRoot(mountPoint);
+    LogAdminTrace(
+        "volume.policy.write.start",
+        "{"
+        + JsonField("mountPoint", mountPoint) + ","
+        + JsonField("normalizedMountPoint", normalizedMountPoint) + ","
+        + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + ","
+        + "\"baseline\":" + SnapshotTraceJson(baseline)
+        + "}");
+
     auto resolvedVolume = TryResolveVolumeGuidFromMountPoint(normalizedMountPoint, error);
     if (!resolvedVolume)
     {
+        LogAdminTrace(
+            "volume.policy.resolve.failed",
+            "{"
+            + JsonField("normalizedMountPoint", normalizedMountPoint) + ","
+            + JsonField("error", error)
+            + "}");
         return false;
     }
+
+    LogAdminTrace(
+        "volume.policy.resolve.success",
+        "{"
+        + JsonField("normalizedMountPoint", normalizedMountPoint) + ","
+        + JsonField("volumeGuid", *resolvedVolume)
+        + "}");
 
     JsonObject policy;
     if (auto loaded = LoadJsonFile(PolicyPath(), error))
     {
         policy = *loaded;
+        LogAdminTrace("volume.policy.loaded", "{" + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + "}");
     }
     else
     {
+        LogAdminTrace(
+            "volume.policy.load.failed_using_empty",
+            "{"
+            + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + ","
+            + JsonField("error", error)
+            + "}");
         error.clear();
         policy = JsonObject{};
     }
@@ -933,18 +1165,42 @@ static bool ApplyLocalVolumeSetting(std::string const& mountPoint, DashboardSnap
     EnsurePolicySkeleton(policy, baseline);
     policy.Insert(L"protectedVolume", JsonValue::CreateStringValue(to_hstring(*resolvedVolume)));
     policy.Insert(L"protectedMountPoint", JsonValue::CreateStringValue(to_hstring(normalizedMountPoint)));
-    return SaveJsonFile(PolicyPath(), policy, error);
+    auto saved = SaveJsonFile(PolicyPath(), policy, error);
+    LogAdminTrace(
+        saved ? "volume.policy.write.success" : "volume.policy.write.failed",
+        "{"
+        + JsonField("normalizedMountPoint", normalizedMountPoint) + ","
+        + JsonField("volumeGuid", *resolvedVolume) + ","
+        + JsonField("error", error)
+        + "}");
+    return saved;
 }
 
 static bool ApplyLocalProtectionSetting(bool enabled, DashboardSnapshot const& baseline, std::string const& mountPoint, std::string& error)
 {
+    LogAdminTrace(
+        "protection.policy.write.start",
+        "{"
+        + JsonField("enabled", enabled) + ","
+        + JsonField("mountPoint", mountPoint) + ","
+        + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + ","
+        + "\"baseline\":" + SnapshotTraceJson(baseline)
+        + "}");
+
     JsonObject policy;
     if (auto loaded = LoadJsonFile(PolicyPath(), error))
     {
         policy = *loaded;
+        LogAdminTrace("protection.policy.loaded", "{" + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + "}");
     }
     else
     {
+        LogAdminTrace(
+            "protection.policy.load.failed_using_empty",
+            "{"
+            + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + ","
+            + JsonField("error", error)
+            + "}");
         error.clear();
         policy = JsonObject{};
     }
@@ -957,9 +1213,21 @@ static bool ApplyLocalProtectionSetting(bool enabled, DashboardSnapshot const& b
         auto resolvedVolume = TryResolveVolumeGuidFromMountPoint(normalizedMountPoint, error);
         if (!resolvedVolume)
         {
+            LogAdminTrace(
+                "protection.volume.resolve.failed",
+                "{"
+                + JsonField("mountPoint", normalizedMountPoint) + ","
+                + JsonField("error", error)
+                + "}");
             return false;
         }
 
+        LogAdminTrace(
+            "protection.volume.resolved",
+            "{"
+            + JsonField("mountPoint", normalizedMountPoint) + ","
+            + JsonField("volumeGuid", *resolvedVolume)
+            + "}");
         policy.Insert(L"protectedVolume", JsonValue::CreateStringValue(to_hstring(*resolvedVolume)));
         policy.Insert(L"protectedMountPoint", JsonValue::CreateStringValue(to_hstring(normalizedMountPoint)));
     }
@@ -973,12 +1241,29 @@ static bool ApplyLocalProtectionSetting(bool enabled, DashboardSnapshot const& b
     }
 
     policy.Insert(L"protectionEnabled", JsonValue::CreateBooleanValue(enabled));
-    return SaveJsonFile(PolicyPath(), policy, error);
+    auto saved = SaveJsonFile(PolicyPath(), policy, error);
+    LogAdminTrace(
+        saved ? "protection.policy.write.success" : "protection.policy.write.failed",
+        "{"
+        + JsonField("enabled", enabled) + ","
+        + JsonField("policyPath", WideToUtf8(PolicyPath().wstring())) + ","
+        + JsonField("error", error)
+        + "}");
+    return saved;
 }
 
 static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapshot baseline, std::string mountPoint)
 {
     auto normalizedMountPoint = NormalizeDriveRoot(!Trim(mountPoint).empty() ? mountPoint : baseline.ProtectedMountPoint);
+    LogAdminTrace(
+        "protection.operation.start",
+        "{"
+        + JsonField("enabled", enabled) + ","
+        + JsonField("rawMountPoint", mountPoint) + ","
+        + JsonField("normalizedMountPoint", normalizedMountPoint) + ","
+        + JsonField("adminTraceLog", WideToUtf8(AdminProtectionTraceLogPath().wstring())) + ","
+        + "\"baseline\":" + SnapshotTraceJson(baseline)
+        + "}");
 
     if (enabled && Trim(normalizedMountPoint).empty())
     {
@@ -986,6 +1271,7 @@ static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapsho
         snapshot.BackendLabel = "cached";
         snapshot.LiveBackend = false;
         snapshot.PipeUp = false;
+        LogAdminTrace("protection.operation.failed.no_volume", "{" + JsonField("enabled", enabled) + "}");
         return { false, "Set a mounted drive before enabling protection.", std::move(snapshot), true };
     }
 
@@ -996,6 +1282,13 @@ static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapsho
         snapshot.BackendLabel = "cached";
         snapshot.LiveBackend = false;
         snapshot.PipeUp = false;
+        LogAdminTrace(
+            "protection.operation.failed.policy_write",
+            "{"
+            + JsonField("enabled", enabled) + ","
+            + JsonField("error", error) + ","
+            + "\"snapshot\":" + SnapshotTraceJson(snapshot)
+            + "}");
         return { false, (enabled ? "Failed to bind mounted drive and enable protection: " : "Failed to write policy.json: ") + error, std::move(snapshot), true };
     }
 
@@ -1006,6 +1299,13 @@ static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapsho
         snapshot.BackendLabel = "cached";
         snapshot.LiveBackend = false;
         snapshot.PipeUp = false;
+        LogAdminTrace(
+            "protection.operation.failed.driver_push",
+            "{"
+            + JsonField("enabled", enabled) + ","
+            + JsonField("cliError", cliError) + ","
+            + "\"snapshot\":" + SnapshotTraceJson(snapshot)
+            + "}");
         return { false, "Policy file was updated, but direct driver push failed: " + cliError, std::move(snapshot), true };
     }
 
@@ -1021,6 +1321,12 @@ static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapsho
         : "Protection disabled: policy saved and pushed directly to the minifilter.";
     result.Snapshot = std::move(snapshot);
     result.HasSnapshot = true;
+    LogAdminTrace(
+        "protection.operation.success",
+        "{"
+        + JsonField("enabled", enabled) + ","
+        + "\"snapshot\":" + SnapshotTraceJson(result.Snapshot)
+        + "}");
     return result;
 }
 
@@ -1467,6 +1773,12 @@ static std::string BuildOperationFailureClipboardText(std::string const& message
         text += snapshot.BackendError;
     }
 
+    text += "\nadmin_trace_log: ";
+    text += WideToUtf8(AdminProtectionTraceLogPath().wstring());
+    text += "\ncli_trace_log: ";
+    text += WideToUtf8((LogDirectory() / L"securevol-cli-protection.jsonl").wstring());
+    text += "\ndiagnostics_command: securevol diagnostics copy";
+    text += "\nmanual_files_to_check: policy.json, status.json, securevol-admin-ui-protection.jsonl, securevol-cli-protection.jsonl, securevol-service.jsonl";
     text += "\n";
     return text;
 }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
+using System.Text.Json;
 using SecureVol.Common;
 using SecureVol.Common.Diagnostics;
 using SecureVol.Common.Interop;
@@ -11,6 +12,7 @@ return await SecureVolCli.RunAsync(args);
 internal static class SecureVolCli
 {
     private const uint TokenQuery = 0x0008;
+    private static readonly JsonSerializerOptions TraceJsonOptions = new(JsonSerializerDefaults.General);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
@@ -250,73 +252,240 @@ internal static class SecureVolCli
 
     private static async Task<int> HandleProtectionAsync(string[] args)
     {
-        if (args.Length == 0)
+        var traceId = Guid.NewGuid().ToString("N");
+        var stopwatch = Stopwatch.StartNew();
+        TraceProtection("protection.command.start", new
         {
-            throw new InvalidOperationException("Missing protection subcommand.");
-        }
+            traceId,
+            args
+        });
 
-        var action = args[0].ToLowerInvariant();
-        if (action is not ("enable" or "disable"))
-        {
-            throw new InvalidOperationException("Usage: securevol protection enable|disable [--volume V:]");
-        }
-
-        if (!IsElevated())
-        {
-            throw new InvalidOperationException("securevol protection enable|disable must be run as Administrator.");
-        }
-
-        var policy = LoadOrCreatePolicy();
-        var requestedVolume = GetOption(args, "--volume");
-        var protectedVolume = policy.ProtectedVolume;
-        var protectedMountPoint = policy.ProtectedMountPoint;
-
-        if (!string.IsNullOrWhiteSpace(requestedVolume))
-        {
-            var normalizedVolume = PolicyConfig.NormalizeVolumeIdentifier(requestedVolume);
-            protectedMountPoint = IsDriveRoot(normalizedVolume) ? normalizedVolume : protectedMountPoint;
-            protectedVolume = VolumeHelpers.ResolveVolumeGuid(requestedVolume);
-        }
-        else if (action == "enable" && IsDriveRoot(policy.NormalizedProtectedMountPoint) && Directory.Exists(policy.NormalizedProtectedMountPoint))
-        {
-            protectedVolume = VolumeHelpers.ResolveVolumeGuid(policy.NormalizedProtectedMountPoint);
-        }
-
-        if (action == "enable" && string.IsNullOrWhiteSpace(PolicyConfig.NormalizeVolumeIdentifier(protectedVolume)))
-        {
-            throw new InvalidOperationException("Protection cannot be enabled because no protected volume is configured. Use --volume A: first.");
-        }
-
-        policy = new PolicyConfig
-        {
-            ProtectionEnabled = action == "enable",
-            ProtectedVolume = protectedVolume,
-            ProtectedMountPoint = protectedMountPoint,
-            DefaultExpectedUser = policy.DefaultExpectedUser,
-            AllowRules = [.. policy.AllowRules]
-        };
-
-        policy.Save(AppPaths.PolicyFilePath);
-
-        TryStartServiceBestEffort();
-        var generation = NewPolicyGeneration();
-        DriverStateDto driverState;
         try
         {
-            driverState = DriverPolicyController.PushPolicy(policy, generation, (uint)Environment.ProcessId);
+            if (args.Length == 0)
+            {
+                TraceProtection("protection.command.invalid_args", new
+                {
+                    traceId,
+                    reason = "missing-subcommand",
+                    args
+                });
+                throw new InvalidOperationException("Missing protection subcommand.");
+            }
+
+            var action = args[0].ToLowerInvariant();
+            if (action is not ("enable" or "disable"))
+            {
+                TraceProtection("protection.command.invalid_args", new
+                {
+                    traceId,
+                    reason = "invalid-action",
+                    action,
+                    args
+                });
+                throw new InvalidOperationException("Usage: securevol protection enable|disable [--volume V:]");
+            }
+
+            var elevated = IsElevated();
+            TraceProtection("protection.elevation.checked", new
+            {
+                traceId,
+                elevated,
+                user = WindowsIdentity.GetCurrent().Name
+            });
+            if (!elevated)
+            {
+                TraceProtection("protection.command.failed.not_admin", new
+                {
+                    traceId,
+                    action
+                });
+                throw new InvalidOperationException("securevol protection enable|disable must be run as Administrator.");
+            }
+
+            var policy = LoadOrCreatePolicy();
+            TraceProtection("protection.policy.loaded", new
+            {
+                traceId,
+                policyPath = AppPaths.PolicyFilePath,
+                policy = DescribePolicy(policy)
+            });
+
+            var requestedVolume = GetOption(args, "--volume");
+            var protectedVolume = policy.ProtectedVolume;
+            var protectedMountPoint = policy.ProtectedMountPoint;
+
+            if (!string.IsNullOrWhiteSpace(requestedVolume))
+            {
+                var normalizedVolume = PolicyConfig.NormalizeVolumeIdentifier(requestedVolume);
+                TraceProtection("protection.volume.requested", new
+                {
+                    traceId,
+                    requestedVolume,
+                    normalizedVolume
+                });
+                protectedMountPoint = IsDriveRoot(normalizedVolume) ? normalizedVolume : protectedMountPoint;
+                try
+                {
+                    protectedVolume = VolumeHelpers.ResolveVolumeGuid(requestedVolume);
+                    TraceProtection("protection.volume.resolved", new
+                    {
+                        traceId,
+                        requestedVolume,
+                        protectedVolume,
+                        protectedMountPoint
+                    });
+                }
+                catch (Exception ex)
+                {
+                    TraceProtection("protection.volume.resolve.failed", new
+                    {
+                        traceId,
+                        requestedVolume,
+                        normalizedVolume,
+                        exception = ex.ToString()
+                    });
+                    throw;
+                }
+            }
+            else if (action == "enable" && IsDriveRoot(policy.NormalizedProtectedMountPoint) && Directory.Exists(policy.NormalizedProtectedMountPoint))
+            {
+                try
+                {
+                    TraceProtection("protection.volume.refresh_from_mount.start", new
+                    {
+                        traceId,
+                        mountPoint = policy.NormalizedProtectedMountPoint
+                    });
+                    protectedVolume = VolumeHelpers.ResolveVolumeGuid(policy.NormalizedProtectedMountPoint);
+                    TraceProtection("protection.volume.refresh_from_mount.success", new
+                    {
+                        traceId,
+                        mountPoint = policy.NormalizedProtectedMountPoint,
+                        protectedVolume
+                    });
+                }
+                catch (Exception ex)
+                {
+                    TraceProtection("protection.volume.refresh_from_mount.failed", new
+                    {
+                        traceId,
+                        mountPoint = policy.NormalizedProtectedMountPoint,
+                        exception = ex.ToString()
+                    });
+                    throw;
+                }
+            }
+            else
+            {
+                TraceProtection("protection.volume.using_existing_policy", new
+                {
+                    traceId,
+                    protectedVolume,
+                    protectedMountPoint
+                });
+            }
+
+            if (action == "enable" && string.IsNullOrWhiteSpace(PolicyConfig.NormalizeVolumeIdentifier(protectedVolume)))
+            {
+                TraceProtection("protection.command.failed.no_volume", new
+                {
+                    traceId,
+                    protectedVolume,
+                    protectedMountPoint
+                });
+                throw new InvalidOperationException("Protection cannot be enabled because no protected volume is configured. Use --volume A: first.");
+            }
+
+            policy = new PolicyConfig
+            {
+                ProtectionEnabled = action == "enable",
+                ProtectedVolume = protectedVolume,
+                ProtectedMountPoint = protectedMountPoint,
+                DefaultExpectedUser = policy.DefaultExpectedUser,
+                AllowRules = [.. policy.AllowRules]
+            };
+
+            TraceProtection("protection.policy.save.start", new
+            {
+                traceId,
+                policyPath = AppPaths.PolicyFilePath,
+                policy = DescribePolicy(policy)
+            });
+            policy.Save(AppPaths.PolicyFilePath);
+            TraceProtection("protection.policy.save.success", new
+            {
+                traceId,
+                policyPath = AppPaths.PolicyFilePath
+            });
+
+            TryStartServiceBestEffort(traceId);
+            var generation = NewPolicyGeneration();
+            TraceProtection("protection.driver.push.start", new
+            {
+                traceId,
+                generation,
+                processId = Environment.ProcessId,
+                action,
+                policy = DescribePolicy(policy)
+            });
+
+            DriverStateDto driverState;
+            try
+            {
+                driverState = DriverPolicyController.PushPolicy(policy, generation, (uint)Environment.ProcessId);
+            }
+            catch (Exception ex)
+            {
+                TraceProtection("protection.driver.push.failed", new
+                {
+                    traceId,
+                    generation,
+                    exception = ex.ToString()
+                });
+                TraceProtection("protection.command.completed", new
+                {
+                    traceId,
+                    success = false,
+                    elapsedMs = stopwatch.ElapsedMilliseconds
+                });
+                Console.Error.WriteLine($"Policy file updated, but driver policy push failed: {ex.Message}");
+                return 1;
+            }
+
+            TraceProtection("protection.driver.push.success", new
+            {
+                traceId,
+                generation,
+                driverState = DescribeDriverState(driverState)
+            });
+
+            await TryReloadAsync(traceId).ConfigureAwait(false);
+            TraceProtection("protection.command.completed", new
+            {
+                traceId,
+                success = true,
+                elapsedMs = stopwatch.ElapsedMilliseconds,
+                policyEnabled = policy.ProtectionEnabled,
+                driverState = DescribeDriverState(driverState)
+            });
+
+            Console.WriteLine($"Protection enabled: {policy.ProtectionEnabled}");
+            Console.WriteLine($"Driver policy enabled: {driverState.ProtectionEnabled}");
+            Console.WriteLine($"Driver query client connected: {driverState.ClientConnected}");
+            Console.WriteLine($"Driver protected volume: {driverState.ProtectedVolumeGuid}");
+            return 0;
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Policy file updated, but driver policy push failed: {ex.Message}");
-            return 1;
+            TraceProtection("protection.command.exception", new
+            {
+                traceId,
+                elapsedMs = stopwatch.ElapsedMilliseconds,
+                exception = ex.ToString()
+            });
+            throw;
         }
-
-        await TryReloadAsync().ConfigureAwait(false);
-        Console.WriteLine($"Protection enabled: {policy.ProtectionEnabled}");
-        Console.WriteLine($"Driver policy enabled: {driverState.ProtectionEnabled}");
-        Console.WriteLine($"Driver query client connected: {driverState.ClientConnected}");
-        Console.WriteLine($"Driver protected volume: {driverState.ProtectedVolumeGuid}");
-        return 0;
     }
 
     private static Task<int> HandleLaunchAsync(string[] args)
@@ -445,14 +614,38 @@ internal static class SecureVolCli
         return PolicyConfig.Load(AppPaths.PolicyFilePath);
     }
 
-    private static async Task TryReloadAsync()
+    private static async Task TryReloadAsync(string? traceId = null)
     {
+        if (!string.IsNullOrWhiteSpace(traceId))
+        {
+            TraceProtection("protection.reload.start", new
+            {
+                traceId
+            });
+        }
+
         try
         {
             await ReloadAsync().ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(traceId))
+            {
+                TraceProtection("protection.reload.success", new
+                {
+                    traceId
+                });
+            }
         }
-        catch
+        catch (Exception ex)
         {
+            if (!string.IsNullOrWhiteSpace(traceId))
+            {
+                TraceProtection("protection.reload.skipped", new
+                {
+                    traceId,
+                    exception = ex.ToString()
+                });
+            }
+
             Console.WriteLine("Policy file updated. Service reload skipped because the service is not reachable.");
         }
     }
@@ -499,11 +692,28 @@ internal static class SecureVolCli
         }
     }
 
-    private static void TryStartServiceBestEffort()
+    private static void TryStartServiceBestEffort(string? traceId = null)
     {
+        if (!string.IsNullOrWhiteSpace(traceId))
+        {
+            TraceProtection("protection.service.start.attempt", new
+            {
+                traceId
+            });
+        }
+
         try
         {
             var exitCode = RunProcess("sc.exe", "start SecureVolSvc");
+            if (!string.IsNullOrWhiteSpace(traceId))
+            {
+                TraceProtection("protection.service.start.exit", new
+                {
+                    traceId,
+                    exitCode
+                });
+            }
+
             if (exitCode is not (0 or 1056))
             {
                 Console.WriteLine($"SecureVolSvc start returned exit code {exitCode}; continuing with direct driver policy push.");
@@ -511,9 +721,77 @@ internal static class SecureVolCli
         }
         catch (Exception ex)
         {
+            if (!string.IsNullOrWhiteSpace(traceId))
+            {
+                TraceProtection("protection.service.start.exception", new
+                {
+                    traceId,
+                    exception = ex.ToString()
+                });
+            }
+
             Console.WriteLine($"SecureVolSvc start skipped: {ex.Message}");
         }
     }
+
+    private static string CliProtectionTraceLogPath =>
+        Path.Combine(AppPaths.LogDirectory, "securevol-cli-protection.jsonl");
+
+    private static void TraceProtection(string eventName, object details)
+    {
+        try
+        {
+            AppPaths.EnsureDirectories();
+            var payload = new
+            {
+                timestampUtc = DateTimeOffset.UtcNow,
+                releaseTag = BuildIdentity.ReleaseTag,
+                pid = Environment.ProcessId,
+                process = Environment.ProcessPath,
+                user = WindowsIdentity.GetCurrent().Name,
+                elevated = IsElevated(),
+                eventName,
+                details
+            };
+            File.AppendAllText(
+                CliProtectionTraceLogPath,
+                JsonSerializer.Serialize(payload, TraceJsonOptions) + Environment.NewLine);
+        }
+        catch
+        {
+            // Protection tracing must never block the actual control path.
+        }
+    }
+
+    private static object DescribePolicy(PolicyConfig policy) => new
+    {
+        protectionEnabled = policy.ProtectionEnabled,
+        protectedVolume = policy.ProtectedVolume,
+        normalizedProtectedVolume = policy.NormalizedProtectedVolume,
+        protectedMountPoint = policy.ProtectedMountPoint,
+        normalizedProtectedMountPoint = policy.NormalizedProtectedMountPoint,
+        defaultExpectedUser = policy.DefaultExpectedUser,
+        normalizedDefaultUser = policy.NormalizedDefaultUser,
+        allowRules = policy.AllowRules.Select(static rule => new
+        {
+            rule.Name,
+            rule.ImagePath,
+            rule.Sha256,
+            rule.RequireSignature,
+            rule.Publisher,
+            rule.ExpectedUser,
+            rule.Notes
+        }).ToArray()
+    };
+
+    private static object DescribeDriverState(DriverStateDto state) => new
+    {
+        state.ProtectionEnabled,
+        state.ClientConnected,
+        state.PolicyGeneration,
+        state.CacheEntryCount,
+        state.ProtectedVolumeGuid
+    };
 
     private static uint NewPolicyGeneration() =>
         unchecked((uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds());
