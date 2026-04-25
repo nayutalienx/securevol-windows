@@ -1,12 +1,20 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Net.Http;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace SecureVol.Installer;
 
 internal sealed class InstallerForm : Form
 {
+    private const string ReleasesApiUrl = "https://api.github.com/repos/nayutalienx/securevol-windows/releases?per_page=20";
+    private const string InstallerAssetPrefix = "SecureVol.Installer-win-x64-";
+    private const string InstallerAssetSuffix = ".zip";
+
     private readonly Label _titleLabel;
     private readonly Label _subtitleLabel;
     private readonly Label _statusLabel;
@@ -14,6 +22,7 @@ internal sealed class InstallerForm : Form
     private readonly CheckBox _autoStartCheckBox;
     private readonly Button _installButton;
     private readonly Button _repairButton;
+    private readonly Button _updateFromGitHubButton;
     private readonly Button _uninstallButton;
     private readonly Button _launchAdminButton;
     private readonly Button _openLogsButton;
@@ -26,7 +35,7 @@ internal sealed class InstallerForm : Form
     private string? _currentLogPath;
     private bool _busy;
 
-    public InstallerForm()
+    public InstallerForm(InstallerStartupAction? startupAction = null)
     {
         Text = "SecureVol Installer";
         StartPosition = FormStartPosition.CenterScreen;
@@ -84,7 +93,7 @@ internal sealed class InstallerForm : Form
             Height = 48,
             Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point),
             ForeColor = Color.FromArgb(75, 85, 99),
-            Text = "Installs the SecureVol backend, minifilter package, and native Dear ImGui admin app from the embedded release payload.",
+            Text = "Installs the SecureVol backend, minifilter package, native Dear ImGui admin app, and can update from the latest GitHub release.",
             Location = new Point(0, 42)
         };
         headerPanel.Controls.Add(_subtitleLabel);
@@ -135,6 +144,7 @@ internal sealed class InstallerForm : Form
 
         _installButton = CreateActionButton("Install", async (_, _) => await RunSetupActionAsync("install"));
         _repairButton = CreateActionButton("Repair", async (_, _) => await RunSetupActionAsync("repair"));
+        _updateFromGitHubButton = CreateActionButton("Update from GitHub", async (_, _) => await RunGitHubUpdateAsync());
         _uninstallButton = CreateActionButton("Uninstall", async (_, _) => await RunSetupActionAsync("uninstall"));
         _launchAdminButton = CreateActionButton("Launch Admin", (_, _) => LaunchAdminApp());
         _openLogsButton = CreateActionButton("Open Logs", (_, _) => OpenLogsFolder());
@@ -142,6 +152,7 @@ internal sealed class InstallerForm : Form
 
         actionsPanel.Controls.Add(_installButton);
         actionsPanel.Controls.Add(_repairButton);
+        actionsPanel.Controls.Add(_updateFromGitHubButton);
         actionsPanel.Controls.Add(_uninstallButton);
         actionsPanel.Controls.Add(_launchAdminButton);
         actionsPanel.Controls.Add(_openLogsButton);
@@ -223,6 +234,17 @@ internal sealed class InstallerForm : Form
 
         AppendInstallerMessage("Embedded payload ready. Click Install to deploy SecureVol.");
         AppendInstallerMessage($"Installer logs are written to '{_logsRoot}'.");
+
+        if (startupAction is not null)
+        {
+            _enableTestSigningCheckBox.Checked = startupAction.EnableTestSigning;
+            _autoStartCheckBox.Checked = startupAction.AutoStart;
+            Shown += async (_, _) =>
+            {
+                AppendInstallerMessage($"Auto-run requested: {startupAction.Action}.");
+                await RunSetupActionAsync(startupAction.Action);
+            };
+        }
     }
 
     private Button CreateActionButton(string text, EventHandler onClick)
@@ -320,6 +342,98 @@ internal sealed class InstallerForm : Form
         }
     }
 
+    private async Task RunGitHubUpdateAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        SetBusy(true, "Downloading latest GitHub release...");
+        _currentLogPath = Path.Combine(_logsRoot, $"securevol-github-update-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+        AppendInstallerMessage("Starting GitHub auto-update.");
+        AppendInstallerMessage($"Writing log to '{_currentLogPath}'.");
+
+        string? sessionRoot = null;
+        try
+        {
+            sessionRoot = Path.Combine(
+                Path.GetTempPath(),
+                "SecureVolInstallerUpdate",
+                DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
+
+            Directory.CreateDirectory(sessionRoot);
+
+            var release = await ResolveLatestInstallerReleaseAsync();
+            AppendInstallerMessage($"Latest release: {release.TagName}");
+            AppendInstallerMessage($"Selected asset: {release.AssetName}");
+
+            var zipPath = Path.Combine(sessionRoot, release.AssetName);
+            await DownloadFileAsync(release.DownloadUrl, zipPath);
+            AppendInstallerMessage($"Downloaded artifact to '{zipPath}'.");
+            VerifyDownloadedChecksum(zipPath, release);
+
+            var extractRoot = Path.Combine(sessionRoot, "extracted");
+            ZipFile.ExtractToDirectory(zipPath, extractRoot, overwriteFiles: true);
+            AppendInstallerMessage($"Extracted latest installer to '{extractRoot}'.");
+
+            var installerPath = ResolveDownloadedInstallerPath(extractRoot);
+            AppendInstallerMessage($"Launching latest installer at '{installerPath}'.");
+
+            var arguments = new List<string> { "--autorun", "repair" };
+            if (_enableTestSigningCheckBox.Checked)
+            {
+                arguments.Add("--enable-testsigning");
+            }
+
+            if (_autoStartCheckBox.Checked)
+            {
+                arguments.Add("--autostart");
+            }
+            else
+            {
+                arguments.Add("--no-autostart");
+            }
+
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = installerPath,
+                WorkingDirectory = Path.GetDirectoryName(installerPath)!,
+                UseShellExecute = true,
+                Arguments = string.Join(" ", arguments.Select(QuoteArgument))
+            });
+
+            if (process is null)
+            {
+                throw new InvalidOperationException("Failed to launch the downloaded SecureVol installer.");
+            }
+
+            AppendInstallerMessage("The latest installer was launched and will run Repair automatically.");
+            AppendInstallerMessage($"Keeping extracted update payload for the child installer: '{sessionRoot}'.");
+            SetStatus("Latest installer launched. Follow the new installer window.", Color.DarkGreen);
+        }
+        catch (Exception ex)
+        {
+            AppendInstallerMessage($"ERROR: {ex.Message}");
+            SetStatus("GitHub update failed.", Color.DarkRed);
+            MessageBox.Show(
+                this,
+                ex.Message,
+                "SecureVol Installer",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+
+            if (!string.IsNullOrWhiteSpace(sessionRoot))
+            {
+                TryDeleteDirectory(sessionRoot);
+            }
+        }
+        finally
+        {
+            SetBusy(false, _statusLabel.Text);
+        }
+    }
+
     private async Task<string> ExtractEmbeddedPayloadAsync()
     {
         var assembly = Assembly.GetExecutingAssembly();
@@ -350,6 +464,159 @@ internal sealed class InstallerForm : Form
 
         ZipFile.ExtractToDirectory(zipPath, extractRoot, overwriteFiles: true);
         return extractRoot;
+    }
+
+    private static async Task<GithubInstallerRelease> ResolveLatestInstallerReleaseAsync()
+    {
+        using var client = CreateGitHubHttpClient();
+        await using var stream = await client.GetStreamAsync(ReleasesApiUrl);
+        using var document = await JsonDocument.ParseAsync(stream);
+
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("GitHub releases response was not an array.");
+        }
+
+        foreach (var release in document.RootElement.EnumerateArray())
+        {
+            if (release.TryGetProperty("draft", out var draftElement) && draftElement.GetBoolean())
+            {
+                continue;
+            }
+
+            var tagName = release.TryGetProperty("tag_name", out var tagElement)
+                ? tagElement.GetString() ?? "<unknown>"
+                : "<unknown>";
+            var body = release.TryGetProperty("body", out var bodyElement)
+                ? bodyElement.GetString() ?? string.Empty
+                : string.Empty;
+            var expectedSha256 = ExtractSha256FromReleaseBody(body);
+
+            if (!release.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var asset in assets.EnumerateArray())
+            {
+                var name = asset.TryGetProperty("name", out var nameElement)
+                    ? nameElement.GetString()
+                    : null;
+
+                if (string.IsNullOrWhiteSpace(name) ||
+                    !name.StartsWith(InstallerAssetPrefix, StringComparison.OrdinalIgnoreCase) ||
+                    !name.EndsWith(InstallerAssetSuffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var downloadUrl = asset.TryGetProperty("browser_download_url", out var urlElement)
+                    ? urlElement.GetString()
+                    : null;
+
+                if (string.IsNullOrWhiteSpace(downloadUrl))
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(expectedSha256))
+                {
+                    throw new InvalidOperationException(
+                        $"Latest release '{tagName}' does not publish a SHA-256 checksum in its release notes. Refusing to auto-update.");
+                }
+
+                return new GithubInstallerRelease(tagName, name, downloadUrl, expectedSha256);
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"No '{InstallerAssetPrefix}*{InstallerAssetSuffix}' asset was found in the latest GitHub releases.");
+    }
+
+    private static string? ExtractSha256FromReleaseBody(string body)
+    {
+        var match = Regex.Match(body, @"SHA-256:\s*([A-Fa-f0-9]{64})", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value.ToUpperInvariant() : null;
+    }
+
+    private void VerifyDownloadedChecksum(string zipPath, GithubInstallerRelease release)
+    {
+        using var stream = File.OpenRead(zipPath);
+        var actual = Convert.ToHexString(SHA256.HashData(stream));
+        if (!string.Equals(actual, release.Sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Downloaded artifact checksum mismatch. Expected {release.Sha256}, got {actual}.");
+        }
+
+        AppendInstallerMessage($"SHA-256 verified: {actual}");
+    }
+
+    private async Task DownloadFileAsync(string url, string destinationPath)
+    {
+        using var client = CreateGitHubHttpClient();
+        using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+
+        var expectedBytes = response.Content.Headers.ContentLength;
+        if (expectedBytes.HasValue)
+        {
+            AppendInstallerMessage($"Download size: {expectedBytes.Value / 1024 / 1024} MB.");
+        }
+
+        await using var remoteStream = await response.Content.ReadAsStreamAsync();
+        await using var fileStream = File.Create(destinationPath);
+
+        var buffer = new byte[1024 * 1024];
+        long totalBytes = 0;
+        long nextLogAt = 32L * 1024L * 1024L;
+        while (true)
+        {
+            var read = await remoteStream.ReadAsync(buffer);
+            if (read == 0)
+            {
+                break;
+            }
+
+            await fileStream.WriteAsync(buffer.AsMemory(0, read));
+            totalBytes += read;
+
+            if (totalBytes >= nextLogAt)
+            {
+                AppendInstallerMessage($"Downloaded {totalBytes / 1024 / 1024} MB...");
+                nextLogAt += 32L * 1024L * 1024L;
+            }
+        }
+    }
+
+    private static HttpClient CreateGitHubHttpClient()
+    {
+        var client = new HttpClient();
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("SecureVol-Installer");
+        client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        return client;
+    }
+
+    private static string ResolveDownloadedInstallerPath(string extractRoot)
+    {
+        var installer = Directory.EnumerateFiles(extractRoot, "SecureVol.Installer.exe", SearchOption.AllDirectories)
+            .OrderBy(path => path.Length)
+            .FirstOrDefault();
+
+        if (!string.IsNullOrWhiteSpace(installer))
+        {
+            return installer;
+        }
+
+        var topLevelEntries = Directory.EnumerateFileSystemEntries(extractRoot)
+            .Select(Path.GetFileName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var entrySummary = topLevelEntries.Length == 0 ? "<empty>" : string.Join(", ", topLevelEntries);
+        throw new InvalidOperationException(
+            $"SecureVol.Installer.exe was not found inside the downloaded artifact. Top-level entries: {entrySummary}.");
     }
 
     private static string ResolveSetupHostPath(string extractRoot)
@@ -495,6 +762,7 @@ internal sealed class InstallerForm : Form
         _busy = value;
         _installButton.Enabled = !value;
         _repairButton.Enabled = !value;
+        _updateFromGitHubButton.Enabled = !value;
         _uninstallButton.Enabled = !value;
         _launchAdminButton.Enabled = !value;
         _openLogsButton.Enabled = !value;
@@ -576,6 +844,22 @@ internal sealed class InstallerForm : Form
         }
     }
 
+    private static string QuoteArgument(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "\"\"";
+        }
+
+        return value.Any(char.IsWhiteSpace) || value.Contains('"')
+            ? $"\"{value.Replace("\"", "\\\"", StringComparison.Ordinal)}\""
+            : value;
+    }
+
     private static string Capitalize(string value) =>
         string.IsNullOrWhiteSpace(value) ? value : char.ToUpperInvariant(value[0]) + value[1..];
 }
+
+internal sealed record InstallerStartupAction(string Action, bool EnableTestSigning, bool AutoStart);
+
+internal sealed record GithubInstallerRelease(string TagName, string AssetName, string DownloadUrl, string Sha256);

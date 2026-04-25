@@ -34,7 +34,7 @@ The repository now produces a packaged Windows install bundle that contains:
 - the CLI,
 - the native Dear ImGui admin app,
 - the setup host used for install, repair, and uninstall,
-- a GUI installer bootstrapper for new machines.
+- a GUI installer bootstrapper for new machines, including a GitHub updater that downloads the latest release asset and launches repair from it.
 
 Important for the current preview:
 
@@ -44,6 +44,7 @@ Important for the current preview:
 - if test-signing was just enabled, Windows must be rebooted and the installer run again.
 - repair/update installs backend payloads into versioned directories under `C:\Program Files\SecureVol\payloads`, so a running old service cannot block copying the new release.
 - the installer can configure the SecureVol backend to start with Windows through both an automatic service and a visible `\SecureVol\StartBackend` scheduled task; the backend then loads the minifilter and reapplies the saved policy automatically.
+- `Update from GitHub` in the installer checks the public `nayutalienx/securevol-windows` releases API, downloads the newest `SecureVol.Installer-win-x64-*.zip` asset, extracts it, and starts the downloaded installer in automatic `repair` mode.
 
 ## Quick install on a new machine
 
