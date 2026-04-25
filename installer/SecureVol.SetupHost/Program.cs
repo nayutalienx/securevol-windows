@@ -76,7 +76,8 @@ internal static class Program
             GetOption(args, "--target-root") ?? plan.DefaultInstallRoot,
             HasFlag(args, "--enable-testsigning"),
             HasFlag(args, "--autostart"),
-            !HasFlag(args, "--no-start-menu-shortcuts"));
+            !HasFlag(args, "--no-start-menu-shortcuts"),
+            GetOption(args, "--installer-source"));
 
         return InstallerEngine.Install(plan, options);
     }
@@ -106,7 +107,7 @@ Commands:
   plan
       Print the resolved payload/install plan as JSON.
 
-  install [--target-root "C:\Program Files\SecureVol"] [--enable-testsigning] [--autostart] [--no-start-menu-shortcuts]
+  install [--target-root "C:\Program Files\SecureVol"] [--enable-testsigning] [--autostart] [--installer-source SecureVol.Installer.exe] [--no-start-menu-shortcuts]
       Copy the packaged payload into Program Files, install/update the service and driver,
       start the backend, and create the SecureVol Admin shortcut.
 

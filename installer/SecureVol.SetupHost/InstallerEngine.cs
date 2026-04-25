@@ -66,6 +66,7 @@ internal static class InstallerEngine
         CopyDirectory(Path.GetDirectoryName(plan.AppExecutable)!, installLayout.AppRoot);
         CopyDirectory(plan.SetupRoot, installLayout.SetupRoot);
         CopyDirectory(plan.DriverPackageDirectory, installLayout.DriverRoot);
+        TryPersistGuiInstaller(options.InstallerSourcePath, installLayout.InstallerRoot);
 
         EnsureDefaultPolicyFile();
         ImportDriverCertificateIfPresent(plan.DriverCertificatePath);
@@ -116,6 +117,7 @@ internal static class InstallerEngine
         Console.WriteLine($"InstallRoot      : {targetRoot}");
         Console.WriteLine($"PayloadRoot      : {installLayout.PayloadRoot}");
         Console.WriteLine($"AdminApp         : {installLayout.AppExecutable}");
+        Console.WriteLine($"InstallerApp     : {installLayout.InstallerExecutable}");
         Console.WriteLine($"ServiceInstalled : {ServiceExists(plan.ServiceName)}");
         Console.WriteLine($"ServiceAutoStart : {options.AutoStart}");
         Console.WriteLine($"StartupTask      : {options.AutoStart}");
@@ -182,6 +184,7 @@ internal static class InstallerEngine
         TryDeleteDirectory(installLayout.CliRoot);
         TryDeleteDirectory(installLayout.ServiceRoot);
         TryDeleteDirectory(installLayout.DriverRoot);
+        TryDeleteDirectory(installLayout.InstallerRoot);
         TryDeleteDirectory(Path.Combine(targetRoot, "payloads"));
 
         var runningFromInstallRoot = !string.IsNullOrWhiteSpace(Environment.ProcessPath) &&
@@ -403,6 +406,51 @@ internal static class InstallerEngine
         }
 
         return !stopped && IsServiceRunning(serviceName);
+    }
+
+    private static void TryPersistGuiInstaller(string? installerSourcePath, string installerRoot)
+    {
+        if (string.IsNullOrWhiteSpace(installerSourcePath))
+        {
+            Console.WriteLine("[SecureVol] Installer source was not supplied; skipping persistent GUI installer copy.");
+            return;
+        }
+
+        try
+        {
+            var sourcePath = Path.GetFullPath(installerSourcePath);
+            var sourceRoot = File.Exists(sourcePath)
+                ? Path.GetDirectoryName(sourcePath)
+                : Directory.Exists(sourcePath)
+                    ? sourcePath
+                    : null;
+
+            if (string.IsNullOrWhiteSpace(sourceRoot) || !Directory.Exists(sourceRoot))
+            {
+                Console.WriteLine($"[SecureVol] Installer source '{installerSourcePath}' was not found; skipping persistent GUI installer copy.");
+                return;
+            }
+
+            var normalizedSource = Path.GetFullPath(sourceRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var normalizedDestination = Path.GetFullPath(installerRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(normalizedSource, normalizedDestination, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("[SecureVol] GUI installer is already running from the persistent install location.");
+                return;
+            }
+
+            if (Directory.Exists(installerRoot))
+            {
+                TryDeleteDirectory(installerRoot);
+            }
+
+            CopyDirectory(sourceRoot, installerRoot);
+            Console.WriteLine($"[SecureVol] Persisted GUI installer to '{installerRoot}'.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SecureVol] GUI installer persistence warning: {ex.Message}");
+        }
     }
 
     private static void ConfigureStartupTask(string serviceName, bool autoStart)
@@ -858,6 +906,15 @@ internal static class InstallerEngine
             Path.GetDirectoryName(layout.AppExecutable)!,
             layout.AppExecutable);
 
+        if (File.Exists(layout.InstallerExecutable))
+        {
+            CreateShortcut(
+                Path.Combine(shortcutRoot, "SecureVol Installer.lnk"),
+                layout.InstallerExecutable,
+                Path.GetDirectoryName(layout.InstallerExecutable)!,
+                layout.InstallerExecutable);
+        }
+
         CreateShortcut(
             Path.Combine(shortcutRoot, "Uninstall SecureVol.lnk"),
             layout.SetupExecutable,
@@ -1214,11 +1271,13 @@ internal static class InstallerEngine
         string AppRoot,
         string DriverRoot,
         string SetupRoot,
+        string InstallerRoot,
         string ServiceExecutable,
         string CliExecutable,
         string AppExecutable,
         string DriverInfPath,
-        string SetupExecutable)
+        string SetupExecutable,
+        string InstallerExecutable)
     {
         public static InstalledLayout FromRoot(string root)
         {
@@ -1228,6 +1287,7 @@ internal static class InstallerEngine
             var appRoot = Path.Combine(normalizedRoot, "app");
             var driverRoot = Path.Combine(normalizedRoot, "driver");
             var setupRoot = Path.Combine(normalizedRoot, "setup");
+            var installerRoot = Path.Combine(normalizedRoot, "installer");
 
             return new InstalledLayout(
                 normalizedRoot,
@@ -1237,6 +1297,7 @@ internal static class InstallerEngine
                 appRoot,
                 driverRoot,
                 setupRoot,
+                installerRoot,
                 Path.Combine(serviceRoot, "SecureVol.Service.exe"),
                 Path.Combine(cliRoot, "securevol.exe"),
                 Directory.Exists(appRoot)
@@ -1245,7 +1306,8 @@ internal static class InstallerEngine
                       ?? Path.Combine(appRoot, "SecureVol.ImGui.exe")
                     : Path.Combine(appRoot, "SecureVol.ImGui.exe"),
                 Path.Combine(driverRoot, "SecureVolFlt.inf"),
-                Path.Combine(setupRoot, "SecureVol.SetupHost.exe"));
+                Path.Combine(setupRoot, "SecureVol.SetupHost.exe"),
+                Path.Combine(installerRoot, "SecureVol.Installer.exe"));
         }
 
         public static InstalledLayout CreateForInstall(string root)
@@ -1258,6 +1320,7 @@ internal static class InstallerEngine
             var appRoot = Path.Combine(payloadRoot, "app");
             var driverRoot = Path.Combine(payloadRoot, "driver");
             var setupRoot = Path.Combine(payloadRoot, "setup");
+            var installerRoot = Path.Combine(normalizedRoot, "installer");
 
             return new InstalledLayout(
                 normalizedRoot,
@@ -1267,11 +1330,13 @@ internal static class InstallerEngine
                 appRoot,
                 driverRoot,
                 setupRoot,
+                installerRoot,
                 Path.Combine(serviceRoot, "SecureVol.Service.exe"),
                 Path.Combine(cliRoot, "securevol.exe"),
                 Path.Combine(appRoot, "SecureVol.ImGui.exe"),
                 Path.Combine(driverRoot, "SecureVolFlt.inf"),
-                Path.Combine(setupRoot, "SecureVol.SetupHost.exe"));
+                Path.Combine(setupRoot, "SecureVol.SetupHost.exe"),
+                Path.Combine(installerRoot, "SecureVol.Installer.exe"));
         }
     }
 }

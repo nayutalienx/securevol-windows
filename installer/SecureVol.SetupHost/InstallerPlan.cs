@@ -202,7 +202,8 @@ public readonly record struct InstallOptions(
     string TargetRoot,
     bool EnableTestSigning,
     bool AutoStart,
-    bool CreateStartMenuShortcuts);
+    bool CreateStartMenuShortcuts,
+    string? InstallerSourcePath);
 
 public readonly record struct UninstallOptions(
     string TargetRoot);

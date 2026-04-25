@@ -7,7 +7,9 @@ Current state:
 - `SecureVol.SetupHost` is now the install engine for packaged release payloads.
 - It supports `check`, `plan`, `install`, `repair`, and `uninstall`.
 - `SecureVol.Installer` is now the GUI bootstrapper for end users.
+- The GUI installer must run as Administrator. Install, repair, update, uninstall, service control, driver load, and protected-volume policy operations are elevated operations by design.
 - The GUI installer includes `Update from GitHub`, which downloads the newest public release asset matching `SecureVol.Installer-win-x64-*.zip`, extracts it, and launches that installer in automatic `repair` mode.
+- Install/repair persists the GUI installer to `C:\Program Files\SecureVol\installer\SecureVol.Installer.exe`, creates a Start Menu shortcut for it, and lets the native admin UI launch it in GitHub update mode.
 - Install and repair use versioned payload directories under `C:\Program Files\SecureVol\payloads` so a running old backend does not block the new release from being copied.
 - The GUI installer exposes `Start SecureVol backend automatically with Windows`, which maps to the setup host `--autostart` option and creates both an automatic service configuration and a visible `\SecureVol\StartBackend` scheduled task.
 - `scripts/Build-Release.ps1` produces a portable release layout with:

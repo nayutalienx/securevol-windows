@@ -278,6 +278,20 @@ static fs::path ConfigDirectory()
     return ProgramDataRoot() / L"config";
 }
 
+static fs::path ProgramFilesRoot()
+{
+    wchar_t* raw = nullptr;
+    size_t len = 0;
+    if (_wdupenv_s(&raw, &len, L"ProgramFiles") == 0 && raw != nullptr)
+    {
+        std::wstring value(raw);
+        free(raw);
+        return fs::path(value);
+    }
+
+    return fs::path(LR"(C:\Program Files)");
+}
+
 static fs::path PolicyPath()
 {
     return ConfigDirectory() / L"policy.json";
@@ -1177,6 +1191,37 @@ static void OpenShellPath(fs::path const& path)
     ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+static void LaunchInstalledInstallerUpdate()
+{
+    auto installerPath = ProgramFilesRoot() / L"SecureVol" / L"installer" / L"SecureVol.Installer.exe";
+    if (!fs::exists(installerPath))
+    {
+        MessageBoxW(
+            nullptr,
+            L"SecureVol Installer was not found at C:\\Program Files\\SecureVol\\installer\\SecureVol.Installer.exe. Run the latest installer once, then click Repair so it can persist itself.",
+            L"SecureVol",
+            MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    auto result = ShellExecuteW(
+        nullptr,
+        L"runas",
+        installerPath.c_str(),
+        L"--autorun update --enable-testsigning --autostart",
+        installerPath.parent_path().c_str(),
+        SW_SHOWNORMAL);
+
+    if (reinterpret_cast<intptr_t>(result) <= 32)
+    {
+        MessageBoxW(
+            nullptr,
+            L"Failed to launch SecureVol Installer for update.",
+            L"SecureVol",
+            MB_OK | MB_ICONERROR);
+    }
+}
+
 static bool HasBlockingOperation(AppState const& state)
 {
     return state.PendingAction.has_value();
@@ -1388,7 +1433,7 @@ static void DrawHeader(AppState& state)
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("SecureVol");
         ImGui::SameLine();
-        ImGui::TextDisabled("compact-main v9");
+        ImGui::TextDisabled("compact-main v10");
         ImGui::TextDisabled("backend: %s", state.Snapshot.BackendLabel.c_str());
         DrawEllipsizedText(state.StatusLine, 44, true);
 
@@ -1684,6 +1729,11 @@ static void DrawToolsPane(AppState& state, float height)
         OpenShellPath(ConfigDirectory());
     }
     ImGui::SameLine();
+    if (ImGui::Button("Update", ImVec2(ButtonWidth("Update"), 0.0f)))
+    {
+        LaunchInstalledInstallerUpdate();
+    }
+    ImGui::SameLine();
     if (ImGui::Button("Quit", ImVec2(ButtonWidth("Quit"), 0.0f)))
     {
         PostQuitMessage(0);
@@ -1805,7 +1855,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandleW(nullptr), nullptr, nullptr, nullptr, nullptr, L"SecureVolImGuiNative", nullptr };
     ::RegisterClassExW(&wc);
-    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"SecureVol CompactMain v9", WS_OVERLAPPEDWINDOW, 80, 80, static_cast<int>(760 * mainScale), static_cast<int>(560 * mainScale), nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"SecureVol CompactMain v10", WS_OVERLAPPEDWINDOW, 80, 80, static_cast<int>(760 * mainScale), static_cast<int>(560 * mainScale), nullptr, nullptr, wc.hInstance, nullptr);
 
     if (!CreateDeviceD3D(hwnd))
     {

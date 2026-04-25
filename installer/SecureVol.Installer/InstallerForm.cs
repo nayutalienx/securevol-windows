@@ -102,11 +102,13 @@ internal sealed class InstallerForm : Form
         {
             Dock = DockStyle.Top,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 4,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 12)
         };
         controlsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        controlsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        controlsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         controlsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         controlsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(controlsPanel, 0, 1);
@@ -127,9 +129,17 @@ internal sealed class InstallerForm : Form
             Checked = true,
             Margin = new Padding(0, 0, 0, 10)
         };
-        controlsPanel.RowCount = 3;
-        controlsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         controlsPanel.Controls.Add(_autoStartCheckBox, 0, 1);
+
+        var adminNoteLabel = new Label
+        {
+            AutoSize = true,
+            Text = "Important: SecureVol Installer, Admin UI, install, repair, update, and protection controls must run as Administrator.",
+            ForeColor = Color.DarkRed,
+            Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
+            Margin = new Padding(0, 0, 0, 10)
+        };
+        controlsPanel.Controls.Add(adminNoteLabel, 0, 2);
 
         var actionsPanel = new FlowLayoutPanel
         {
@@ -140,7 +150,7 @@ internal sealed class InstallerForm : Form
             FlowDirection = FlowDirection.LeftToRight,
             Margin = new Padding(0)
         };
-        controlsPanel.Controls.Add(actionsPanel, 0, 2);
+        controlsPanel.Controls.Add(actionsPanel, 0, 3);
 
         _installButton = CreateActionButton("Install", async (_, _) => await RunSetupActionAsync("install"));
         _repairButton = CreateActionButton("Repair", async (_, _) => await RunSetupActionAsync("repair"));
@@ -242,7 +252,14 @@ internal sealed class InstallerForm : Form
             Shown += async (_, _) =>
             {
                 AppendInstallerMessage($"Auto-run requested: {startupAction.Action}.");
-                await RunSetupActionAsync(startupAction.Action);
+                if (string.Equals(startupAction.Action, "update", StringComparison.OrdinalIgnoreCase))
+                {
+                    await RunGitHubUpdateAsync();
+                }
+                else
+                {
+                    await RunSetupActionAsync(startupAction.Action);
+                }
             };
         }
     }
@@ -296,6 +313,16 @@ internal sealed class InstallerForm : Form
             if ((action == "install" || action == "repair") && _autoStartCheckBox.Checked)
             {
                 arguments.Add("--autostart");
+            }
+
+            if (action == "install" || action == "repair")
+            {
+                var installerSource = Environment.ProcessPath;
+                if (!string.IsNullOrWhiteSpace(installerSource))
+                {
+                    arguments.Add("--installer-source");
+                    arguments.Add(installerSource);
+                }
             }
 
             var exitCode = await RunProcessAsync(setupHost, arguments, Path.GetDirectoryName(setupHost)!);
@@ -410,7 +437,9 @@ internal sealed class InstallerForm : Form
 
             AppendInstallerMessage("The latest installer was launched and will run Repair automatically.");
             AppendInstallerMessage($"Keeping extracted update payload for the child installer: '{sessionRoot}'.");
+            AppendInstallerMessage("Closing this installer instance so the downloaded repair can replace the persistent installer files.");
             SetStatus("Latest installer launched. Follow the new installer window.", Color.DarkGreen);
+            BeginInvoke(() => Close());
         }
         catch (Exception ex)
         {

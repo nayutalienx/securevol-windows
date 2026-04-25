@@ -19,6 +19,10 @@ The repository is intentionally conservative:
 See `docs/` for threat model, build/install steps, recovery, and testing guidance.
 See `docs/product-backlog.md` for the productization roadmap.
 
+## Administrator Requirement
+
+SecureVol manages a Windows service, a Filter Manager minifilter driver, protected policy files under `C:\ProgramData`, and scheduled tasks. Run the installer, repair/update actions, and the native admin UI as Administrator. The GUI installer and native admin app request elevation, but if Windows blocks UAC elevation the operation should be considered failed.
+
 ## Current UI
 
 The current admin surface is a native Win32/DX11 shell built on upstream [`ocornut/imgui`](https://github.com/ocornut/imgui).
@@ -45,11 +49,12 @@ Important for the current preview:
 - repair/update installs backend payloads into versioned directories under `C:\Program Files\SecureVol\payloads`, so a running old service cannot block copying the new release.
 - the installer can configure the SecureVol backend to start with Windows through both an automatic service and a visible `\SecureVol\StartBackend` scheduled task; the backend then loads the minifilter and reapplies the saved policy automatically.
 - `Update from GitHub` in the installer checks the public `nayutalienx/securevol-windows` releases API, downloads the newest `SecureVol.Installer-win-x64-*.zip` asset, extracts it, and starts the downloaded installer in automatic `repair` mode.
+- after install/repair, the GUI installer is persisted to `C:\Program Files\SecureVol\installer\SecureVol.Installer.exe`; the native admin UI has a `Update` button that launches that installer in GitHub update mode.
 
 ## Quick install on a new machine
 
 1. Download and extract the latest `SecureVol.Installer-*.zip` package.
-2. Run `SecureVol.Installer.exe`.
+2. Run `SecureVol.Installer.exe` as Administrator.
 3. Click `Install` in the installer window.
 4. Reboot if the installer enables test-signing.
 5. Run `SecureVol.Installer.exe` again after reboot if prompted.
@@ -58,6 +63,8 @@ Important for the current preview:
 ## Updating
 
 Run the newer `SecureVol.Installer.exe` as Administrator and click `Repair`. The installer writes a fresh payload directory, points the Windows service at the new backend path, updates shortcuts, and only then tries to clean old payloads. If Windows still has the old backend loaded, cleanup is skipped and the installer reports `RebootRequired: True` instead of failing.
+
+For later updates, launch `SecureVol Installer` from the Start Menu or click `Update` in the native admin UI. This starts the persistent installer from `C:\Program Files\SecureVol\installer`, downloads the latest GitHub artifact, verifies its SHA-256 checksum from the release notes, and runs repair from the downloaded version.
 
 ## Startup And Remount Behavior
 

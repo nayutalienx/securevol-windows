@@ -85,9 +85,9 @@ internal static class Program
         }
 
         var action = args[autoRunIndex + 1].Trim().ToLowerInvariant();
-        if (action is not ("install" or "repair" or "uninstall"))
+        if (action is not ("install" or "repair" or "uninstall" or "update"))
         {
-            throw new InvalidOperationException("--autorun must be followed by install, repair, or uninstall.");
+            throw new InvalidOperationException("--autorun must be followed by install, repair, uninstall, or update.");
         }
 
         var enableTestSigning = HasFlag(args, "--enable-testsigning");
