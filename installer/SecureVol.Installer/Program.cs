@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Windows.Forms;
 
@@ -6,6 +7,25 @@ namespace SecureVol.Installer;
 
 internal static class Program
 {
+    private const uint TokenQuery = 0x0008;
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetTokenInformation(
+        IntPtr tokenHandle,
+        TokenInformationClass tokenInformationClass,
+        out TokenElevation tokenInformation,
+        uint tokenInformationLength,
+        out uint returnLength);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
     [STAThread]
     private static void Main(string[] args)
     {
@@ -35,45 +55,70 @@ internal static class Program
 
     private static void EnsureElevatedOrExit(string[] args)
     {
-        using var identity = WindowsIdentity.GetCurrent();
-        var principal = new WindowsPrincipal(identity);
-        if (principal.IsInRole(WindowsBuiltInRole.Administrator))
+        if (IsProcessElevated())
         {
             return;
         }
 
-        var executable = Environment.ProcessPath;
-        if (!string.IsNullOrWhiteSpace(executable))
+        if (TryRelaunchElevated(args))
         {
-            try
-            {
-                using var process = Process.Start(new ProcessStartInfo
-                {
-                    FileName = executable,
-                    Arguments = string.Join(" ", args.Select(QuoteArgument)),
-                    UseShellExecute = true,
-                    Verb = "runas"
-                });
-
-                if (process is not null)
-                {
-                    Environment.Exit(0);
-                    return;
-                }
-            }
-            catch
-            {
-                // Fall through to the explicit user-facing error.
-            }
+            Environment.Exit(0);
+            return;
         }
 
         MessageBox.Show(
-            "SecureVol Installer must be launched with administrative rights.",
+            "SecureVol Installer must run as Administrator. The non-elevated instance will exit.",
             "SecureVol Installer",
             MessageBoxButtons.OK,
             MessageBoxIcon.Error);
 
         Environment.Exit(1);
+    }
+
+    internal static bool IsProcessElevated()
+    {
+        if (!OpenProcessToken(GetCurrentProcess(), TokenQuery, out var tokenHandle))
+        {
+            return false;
+        }
+
+        try
+        {
+            var elevation = new TokenElevation();
+            var size = (uint)Marshal.SizeOf<TokenElevation>();
+            return GetTokenInformation(tokenHandle, TokenInformationClass.TokenElevation, out elevation, size, out _) &&
+                   elevation.TokenIsElevated != 0;
+        }
+        finally
+        {
+            CloseHandle(tokenHandle);
+        }
+    }
+
+    internal static bool TryRelaunchElevated(string[] args)
+    {
+        var executable = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = executable,
+                Arguments = string.Join(" ", args.Select(QuoteArgument)),
+                UseShellExecute = true,
+                Verb = "runas"
+            });
+
+            return process is not null;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static InstallerStartupAction? ParseStartupAction(string[] args)
@@ -108,5 +153,16 @@ internal static class Program
         return value.Any(char.IsWhiteSpace) || value.Contains('"')
             ? $"\"{value.Replace("\"", "\\\"", StringComparison.Ordinal)}\""
             : value;
+    }
+
+    private enum TokenInformationClass
+    {
+        TokenElevation = 20
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TokenElevation
+    {
+        public uint TokenIsElevated;
     }
 }

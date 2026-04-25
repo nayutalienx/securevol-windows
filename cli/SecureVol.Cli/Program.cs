@@ -10,6 +10,22 @@ return await SecureVolCli.RunAsync(args);
 
 internal static class SecureVolCli
 {
+    private const uint TokenQuery = 0x0008;
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetTokenInformation(
+        IntPtr tokenHandle,
+        TokenInformationClass tokenInformationClass,
+        out TokenElevation tokenInformation,
+        uint tokenInformationLength,
+        out uint returnLength);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
     public static async Task<int> RunAsync(string[] args)
     {
         if (args.Length == 0)
@@ -457,8 +473,22 @@ internal static class SecureVolCli
 
     private static bool IsElevated()
     {
-        using var identity = WindowsIdentity.GetCurrent();
-        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+        if (!OpenProcessToken(GetCurrentProcess(), TokenQuery, out var tokenHandle))
+        {
+            return false;
+        }
+
+        try
+        {
+            var elevation = new TokenElevation();
+            var size = (uint)Marshal.SizeOf<TokenElevation>();
+            return GetTokenInformation(tokenHandle, TokenInformationClass.TokenElevation, out elevation, size, out _) &&
+                   elevation.TokenIsElevated != 0;
+        }
+        finally
+        {
+            NativeMethods.CloseHandle(tokenHandle);
+        }
     }
 
     private static string RequireOption(string[] args, string name) =>
@@ -540,4 +570,15 @@ SecureVol CLI
 
     private static string Quote(string value) =>
         value.StartsWith('"') && value.EndsWith("\"", StringComparison.Ordinal) ? value : $"\"{value}\"";
+
+    private enum TokenInformationClass
+    {
+        TokenElevation = 20
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TokenElevation
+    {
+        public uint TokenIsElevated;
+    }
 }

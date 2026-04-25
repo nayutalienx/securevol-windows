@@ -36,6 +36,7 @@ internal sealed class InstallerForm : Form
 
     private string? _currentLogPath;
     private bool _busy;
+    private bool _blockedByElevation;
 
     public InstallerForm(InstallerStartupAction? startupAction = null)
     {
@@ -249,6 +250,31 @@ internal sealed class InstallerForm : Form
         AppendInstallerMessage("Embedded payload ready. Click Install to deploy SecureVol.");
         AppendInstallerMessage($"Installer logs are written to '{_logsRoot}'.");
 
+        if (!Program.IsProcessElevated())
+        {
+            _blockedByElevation = true;
+            AppendInstallerMessage("ERROR: SecureVol Installer is not running elevated. Privileged controls are disabled.");
+            SetStatus("Administrator rights required. Relaunching through UAC...", Color.DarkRed);
+            DisablePrivilegedControls();
+            Shown += (_, _) =>
+            {
+                if (Program.TryRelaunchElevated(Environment.GetCommandLineArgs().Skip(1).ToArray()))
+                {
+                    Close();
+                    return;
+                }
+
+                MessageBox.Show(
+                    this,
+                    "SecureVol Installer must run as Administrator. This non-elevated instance cannot be used.",
+                    "SecureVol Installer",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+                Close();
+            };
+            return;
+        }
+
         if (startupAction is not null)
         {
             _enableTestSigningCheckBox.Checked = startupAction.EnableTestSigning;
@@ -289,6 +315,11 @@ internal sealed class InstallerForm : Form
 
     private async Task RunSetupActionAsync(string action)
     {
+        if (!RequireElevation())
+        {
+            return;
+        }
+
         if (_busy)
         {
             return;
@@ -375,6 +406,11 @@ internal sealed class InstallerForm : Form
 
     private async Task RunGitHubUpdateAsync()
     {
+        if (!RequireElevation())
+        {
+            return;
+        }
+
         if (_busy)
         {
             return;
@@ -740,6 +776,11 @@ internal sealed class InstallerForm : Form
 
     private void LaunchAdminApp()
     {
+        if (!RequireElevation())
+        {
+            return;
+        }
+
         var installRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             "SecureVol");
@@ -759,7 +800,8 @@ internal sealed class InstallerForm : Form
         Process.Start(new ProcessStartInfo
         {
             FileName = appPath,
-            UseShellExecute = true
+            UseShellExecute = true,
+            Verb = "runas"
         });
     }
 
@@ -796,6 +838,11 @@ internal sealed class InstallerForm : Form
 
     private async Task UploadDiagnosticsAsync()
     {
+        if (!RequireElevation())
+        {
+            return;
+        }
+
         if (_busy)
         {
             return;
@@ -841,6 +888,15 @@ internal sealed class InstallerForm : Form
 
     private void SetBusy(bool value, string statusText)
     {
+        if (_blockedByElevation)
+        {
+            DisablePrivilegedControls();
+            _quitButton.Enabled = true;
+            _progressBar.Visible = false;
+            SetStatus("Administrator rights required.", Color.DarkRed);
+            return;
+        }
+
         _busy = value;
         _installButton.Enabled = !value;
         _repairButton.Enabled = !value;
@@ -853,6 +909,42 @@ internal sealed class InstallerForm : Form
         _enableTestSigningCheckBox.Enabled = !value;
         _progressBar.Visible = value;
         SetStatus(statusText, value ? Color.FromArgb(30, 64, 175) : Color.FromArgb(31, 41, 55));
+    }
+
+    private bool RequireElevation()
+    {
+        if (Program.IsProcessElevated())
+        {
+            return true;
+        }
+
+        _blockedByElevation = true;
+        DisablePrivilegedControls();
+        _quitButton.Enabled = true;
+        _progressBar.Visible = false;
+        SetStatus("Administrator rights required.", Color.DarkRed);
+        AppendInstallerMessage("ERROR: operation refused because the installer process is not elevated.");
+
+        MessageBox.Show(
+            this,
+            "SecureVol Installer must run as Administrator. Close this window and launch it through UAC.",
+            "SecureVol Installer",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Error);
+        return false;
+    }
+
+    private void DisablePrivilegedControls()
+    {
+        _installButton.Enabled = false;
+        _repairButton.Enabled = false;
+        _updateFromGitHubButton.Enabled = false;
+        _uninstallButton.Enabled = false;
+        _launchAdminButton.Enabled = false;
+        _openLogsButton.Enabled = false;
+        _uploadDiagnosticsButton.Enabled = false;
+        _enableTestSigningCheckBox.Enabled = false;
+        _autoStartCheckBox.Enabled = false;
     }
 
     private void SetStatus(string text, Color color)
