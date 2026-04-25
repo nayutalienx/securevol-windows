@@ -13,6 +13,7 @@ internal static class InstallerEngine
 {
     private const int MoveFileReplaceExisting = 0x1;
     private const int MoveFileDelayUntilReboot = 0x4;
+    private const string StartupTaskName = @"\SecureVol\StartBackend";
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool MoveFileEx(string lpExistingFileName, string? lpNewFileName, int dwFlags);
@@ -74,6 +75,7 @@ internal static class InstallerEngine
             enableTestSigning: options.EnableTestSigning);
 
         var serviceRestartDeferred = InstallOrUpdateService(plan.ServiceName, installLayout.ServiceExecutable, options.AutoStart);
+        ConfigureStartupTask(plan.ServiceName, options.AutoStart);
         var driverUpdateDeferred = InstallOrUpdateDriver(installLayout.DriverInfPath, installLayout.DriverRoot, plan.DriverServiceName);
 
         if (serviceRestartDeferred)
@@ -116,6 +118,7 @@ internal static class InstallerEngine
         Console.WriteLine($"AdminApp         : {installLayout.AppExecutable}");
         Console.WriteLine($"ServiceInstalled : {ServiceExists(plan.ServiceName)}");
         Console.WriteLine($"ServiceAutoStart : {options.AutoStart}");
+        Console.WriteLine($"StartupTask      : {options.AutoStart}");
         Console.WriteLine($"DriverInstalled  : {File.Exists(installLayout.DriverInfPath)}");
         Console.WriteLine($"DriverLoaded     : {IsServiceRunning(plan.DriverServiceName)}");
         Console.WriteLine($"PolicyFile       : {AppPaths.PolicyFilePath}");
@@ -154,6 +157,7 @@ internal static class InstallerEngine
         Console.WriteLine($"[SecureVol] Uninstalling from '{targetRoot}'");
 
         DisableProtectionForRemoval();
+        DeleteStartupTask();
         TryStopService(plan.ServiceName);
 
         TryDeleteService(plan.ServiceName);
@@ -399,6 +403,47 @@ internal static class InstallerEngine
         }
 
         return !stopped && IsServiceRunning(serviceName);
+    }
+
+    private static void ConfigureStartupTask(string serviceName, bool autoStart)
+    {
+        if (!autoStart)
+        {
+            DeleteStartupTask();
+            return;
+        }
+
+        var action = $@"%SystemRoot%\System32\sc.exe start {serviceName}";
+        var output = RunProcessCapture(
+            "schtasks.exe",
+            $@"/Create /TN ""{StartupTaskName}"" /SC ONSTART /RU SYSTEM /RL HIGHEST /TR ""{action}"" /F",
+            allowNonZeroExit: true,
+            out var exitCode);
+
+        if (exitCode == 0)
+        {
+            Console.WriteLine("[SecureVol] Startup task configured for backend service recovery.");
+            return;
+        }
+
+        Console.WriteLine($"[SecureVol] Startup task warning: {output}".Trim());
+    }
+
+    private static void DeleteStartupTask()
+    {
+        var output = RunProcessCapture(
+            "schtasks.exe",
+            $@"/Delete /TN ""{StartupTaskName}"" /F",
+            allowNonZeroExit: true,
+            out var exitCode);
+
+        if (exitCode != 0 &&
+            !output.Contains("cannot find", StringComparison.OrdinalIgnoreCase) &&
+            !output.Contains("не удается найти", StringComparison.OrdinalIgnoreCase) &&
+            !output.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"[SecureVol] Startup task delete warning: {output}".Trim());
+        }
     }
 
     private static bool InstallOrUpdateDriver(string driverInfPath, string driverPackageRoot, string driverServiceName)

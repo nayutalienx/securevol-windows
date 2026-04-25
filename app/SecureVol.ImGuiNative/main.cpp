@@ -140,6 +140,7 @@ struct DashboardSnapshot
     std::string BackendError;
     std::vector<AllowRule> Rules;
     std::vector<DenyEvent> RecentDenies;
+    std::string ProtectedMountPoint;
 };
 
 struct OperationResult
@@ -530,6 +531,60 @@ static std::string QueryServiceStatusText(std::wstring const& serviceName)
     }
 }
 
+static std::string NormalizeDriveRoot(std::string value)
+{
+    value = Trim(std::move(value));
+    std::replace(value.begin(), value.end(), '/', '\\');
+
+    if (value.size() == 2 && value[1] == ':')
+    {
+        value.push_back('\\');
+    }
+
+    if (!value.empty())
+    {
+        value[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(value[0])));
+    }
+
+    return value;
+}
+
+static bool IsDriveRoot(std::string const& value)
+{
+    return value.size() == 3 &&
+           std::isalpha(static_cast<unsigned char>(value[0])) &&
+           value[1] == ':' &&
+           value[2] == '\\';
+}
+
+static std::optional<std::string> TryResolveVolumeGuidFromMountPoint(std::string const& mountPoint, std::string& error)
+{
+    auto normalized = NormalizeDriveRoot(mountPoint);
+    if (!IsDriveRoot(normalized))
+    {
+        error = "Use a mounted drive letter like A:.";
+        return std::nullopt;
+    }
+
+    std::array<wchar_t, MAX_PATH> volumeName{};
+    if (!GetVolumeNameForVolumeMountPointW(
+            Utf8ToWide(normalized).c_str(),
+            volumeName.data(),
+            static_cast<DWORD>(volumeName.size())))
+    {
+        error = "Unable to resolve " + normalized + " to a volume GUID: " + FormatWin32Error(GetLastError());
+        return std::nullopt;
+    }
+
+    auto guid = WideToUtf8(volumeName.data());
+    while (!guid.empty() && (guid.back() == '\\' || guid.back() == '/'))
+    {
+        guid.pop_back();
+    }
+
+    return guid;
+}
+
 static std::vector<AllowRule> ParseAllowRules(JsonObject const& policy)
 {
     std::vector<AllowRule> rules;
@@ -597,6 +652,7 @@ static DashboardSnapshot LoadLocalSnapshot()
         snapshot.HasPolicy = true;
         snapshot.ProtectionEnabled = JsonBool(*policy, L"protectionEnabled", false);
         snapshot.ProtectedVolume = JsonString(*policy, L"protectedVolume");
+        snapshot.ProtectedMountPoint = JsonString(*policy, L"protectedMountPoint");
         snapshot.DefaultExpectedUser = JsonString(*policy, L"defaultExpectedUser");
         snapshot.Rules = ParseAllowRules(*policy);
     }
@@ -633,6 +689,7 @@ static DashboardSnapshot SnapshotFromDashboardResponse(JsonObject const& respons
         snapshot.HasPolicy = true;
         snapshot.ProtectionEnabled = JsonBool(*policy, L"protectionEnabled", false);
         snapshot.ProtectedVolume = JsonString(*policy, L"protectedVolume");
+        snapshot.ProtectedMountPoint = JsonString(*policy, L"protectedMountPoint");
         snapshot.DefaultExpectedUser = JsonString(*policy, L"defaultExpectedUser");
         snapshot.Rules = ParseAllowRules(*policy);
     }
@@ -740,7 +797,55 @@ static bool WaitForServiceStatusConfirmation(bool enabled, DWORD timeoutMs)
     return false;
 }
 
-static bool ApplyLocalProtectionSetting(bool enabled, DashboardSnapshot const& baseline, std::string& error)
+static bool EnsurePolicySkeleton(JsonObject& policy, DashboardSnapshot const& baseline)
+{
+    if (!policy.HasKey(L"defaultExpectedUser"))
+    {
+        if (baseline.DefaultExpectedUser.empty())
+        {
+            policy.Insert(L"defaultExpectedUser", JsonValue::CreateNullValue());
+        }
+        else
+        {
+            policy.Insert(L"defaultExpectedUser", JsonValue::CreateStringValue(to_hstring(baseline.DefaultExpectedUser)));
+        }
+    }
+
+    if (!policy.HasKey(L"allowRules"))
+    {
+        policy.Insert(L"allowRules", JsonArray{});
+    }
+
+    return true;
+}
+
+static bool ApplyLocalVolumeSetting(std::string const& mountPoint, DashboardSnapshot const& baseline, std::string& error)
+{
+    auto normalizedMountPoint = NormalizeDriveRoot(mountPoint);
+    auto resolvedVolume = TryResolveVolumeGuidFromMountPoint(normalizedMountPoint, error);
+    if (!resolvedVolume)
+    {
+        return false;
+    }
+
+    JsonObject policy;
+    if (auto loaded = LoadJsonFile(PolicyPath(), error))
+    {
+        policy = *loaded;
+    }
+    else
+    {
+        error.clear();
+        policy = JsonObject{};
+    }
+
+    EnsurePolicySkeleton(policy, baseline);
+    policy.Insert(L"protectedVolume", JsonValue::CreateStringValue(to_hstring(*resolvedVolume)));
+    policy.Insert(L"protectedMountPoint", JsonValue::CreateStringValue(to_hstring(normalizedMountPoint)));
+    return SaveJsonFile(PolicyPath(), policy, error);
+}
+
+static bool ApplyLocalProtectionSetting(bool enabled, DashboardSnapshot const& baseline, std::string const& mountPoint, std::string& error)
 {
     JsonObject policy;
     if (auto loaded = LoadJsonFile(PolicyPath(), error))
@@ -751,25 +856,38 @@ static bool ApplyLocalProtectionSetting(bool enabled, DashboardSnapshot const& b
     {
         error.clear();
         policy = JsonObject{};
-        policy.Insert(L"protectedVolume", JsonValue::CreateStringValue(to_hstring(baseline.ProtectedVolume)));
-        if (baseline.DefaultExpectedUser.empty())
+    }
+
+    EnsurePolicySkeleton(policy, baseline);
+
+    if (enabled)
+    {
+        auto normalizedMountPoint = NormalizeDriveRoot(mountPoint.empty() ? baseline.ProtectedMountPoint : mountPoint);
+        auto resolvedVolume = TryResolveVolumeGuidFromMountPoint(normalizedMountPoint, error);
+        if (!resolvedVolume)
         {
-            policy.Insert(L"defaultExpectedUser", JsonValue::CreateNullValue());
+            return false;
         }
-        else
+
+        policy.Insert(L"protectedVolume", JsonValue::CreateStringValue(to_hstring(*resolvedVolume)));
+        policy.Insert(L"protectedMountPoint", JsonValue::CreateStringValue(to_hstring(normalizedMountPoint)));
+    }
+    else if (!mountPoint.empty())
+    {
+        auto normalizedMountPoint = NormalizeDriveRoot(mountPoint);
+        if (IsDriveRoot(normalizedMountPoint))
         {
-            policy.Insert(L"defaultExpectedUser", JsonValue::CreateStringValue(to_hstring(baseline.DefaultExpectedUser)));
+            policy.Insert(L"protectedMountPoint", JsonValue::CreateStringValue(to_hstring(normalizedMountPoint)));
         }
-        policy.Insert(L"allowRules", JsonArray{});
     }
 
     policy.Insert(L"protectionEnabled", JsonValue::CreateBooleanValue(enabled));
     return SaveJsonFile(PolicyPath(), policy, error);
 }
 
-static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapshot baseline)
+static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapshot baseline, std::string mountPoint)
 {
-    if (enabled && Trim(baseline.ProtectedVolume).empty())
+    if (enabled && Trim(mountPoint).empty() && Trim(baseline.ProtectedMountPoint).empty())
     {
         auto snapshot = LoadLocalSnapshot();
         snapshot.BackendLabel = "cached";
@@ -779,13 +897,13 @@ static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapsho
     }
 
     std::string error;
-    if (!ApplyLocalProtectionSetting(enabled, baseline, error))
+    if (!ApplyLocalProtectionSetting(enabled, baseline, mountPoint, error))
     {
         auto snapshot = LoadLocalSnapshot();
         snapshot.BackendLabel = "cached";
         snapshot.LiveBackend = false;
         snapshot.PipeUp = false;
-        return { false, "Failed to write policy.json: " + error, std::move(snapshot), true };
+        return { false, (enabled ? "Failed to bind mounted drive and enable protection: " : "Failed to write policy.json: ") + error, std::move(snapshot), true };
     }
 
     std::vector<std::string> actions{ "policy saved locally" };
@@ -1001,9 +1119,43 @@ static OperationResult ExecuteCommandAndRefresh(JsonObject const& request, std::
     return { true, JsonString(*response, L"message", std::string(fallbackSuccess)), std::move(snapshot), true };
 }
 
-static OperationResult ExecuteProtectionChange(bool enabled, DashboardSnapshot baseline)
+static OperationResult ExecuteProtectionChange(bool enabled, DashboardSnapshot baseline, std::string mountPoint)
 {
-    return ApplyLocalProtectionChange(enabled, std::move(baseline));
+    return ApplyLocalProtectionChange(enabled, std::move(baseline), std::move(mountPoint));
+}
+
+static OperationResult ExecuteSetVolumeChange(std::string mountPoint, DashboardSnapshot baseline)
+{
+    std::string error;
+    if (!ApplyLocalVolumeSetting(mountPoint, baseline, error))
+    {
+        auto snapshot = LoadLocalSnapshot();
+        snapshot.BackendLabel = "cached";
+        snapshot.LiveBackend = false;
+        snapshot.PipeUp = false;
+        return { false, "Failed to bind mounted drive: " + error, std::move(snapshot), true };
+    }
+
+    std::vector<std::string> actions{ "policy saved locally" };
+
+    if (QueryServiceStatusText(L"SecureVolSvc") != "Running")
+    {
+        std::string startError;
+        if (TryRunProcess(L"sc.exe", L"start SecureVolSvc", 2500, startError, { 0, 1056 }))
+        {
+            actions.push_back("service start requested");
+        }
+        else if (!startError.empty())
+        {
+            actions.push_back("service start pending (" + startError + ")");
+        }
+    }
+
+    auto snapshot = LoadLocalSnapshot();
+    snapshot.BackendLabel = "cached";
+    snapshot.LiveBackend = false;
+    snapshot.PipeUp = false;
+    return { true, "Protected drive updated: " + JoinCsv(actions) + ". Use On to enforce it.", std::move(snapshot), true };
 }
 
 static std::optional<std::wstring> BrowseExecutable()
@@ -1069,6 +1221,11 @@ static void ApplyOperationResult(AppState& state, PendingOperation const& operat
     if (result.HasSnapshot)
     {
         state.Snapshot = std::move(result.Snapshot);
+        auto savedMountPoint = NormalizeDriveRoot(state.Snapshot.ProtectedMountPoint);
+        if (IsDriveRoot(savedMountPoint))
+        {
+            std::snprintf(state.MountedDrive.data(), state.MountedDrive.size(), "%s", savedMountPoint.c_str());
+        }
     }
 
     state.StatusLine = result.Message.empty()
@@ -1231,7 +1388,7 @@ static void DrawHeader(AppState& state)
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("SecureVol");
         ImGui::SameLine();
-        ImGui::TextDisabled("compact-main v8");
+        ImGui::TextDisabled("compact-main v9");
         ImGui::TextDisabled("backend: %s", state.Snapshot.BackendLabel.c_str());
         DrawEllipsizedText(state.StatusLine, 44, true);
 
@@ -1265,14 +1422,16 @@ static void DrawHeader(AppState& state)
         if (ImGui::Button("On", ImVec2(onWidth, 0.0f)))
         {
             auto baseline = state.Snapshot;
-            StartOperation(state, "Enabling protection...", [baseline] { return ExecuteProtectionChange(true, baseline); });
+            auto mountPoint = std::string(state.MountedDrive.data());
+            StartOperation(state, "Enabling protection...", [baseline, mountPoint] { return ExecuteProtectionChange(true, baseline, mountPoint); });
         }
 
         ImGui::SameLine();
         if (ImGui::Button("Off", ImVec2(offWidth, 0.0f)))
         {
             auto baseline = state.Snapshot;
-            StartOperation(state, "Disabling protection...", [baseline] { return ExecuteProtectionChange(false, baseline); });
+            auto mountPoint = std::string(state.MountedDrive.data());
+            StartOperation(state, "Disabling protection...", [baseline, mountPoint] { return ExecuteProtectionChange(false, baseline, mountPoint); });
         }
 
         ImGui::SameLine();
@@ -1468,10 +1627,9 @@ static void DrawSystemPane(AppState& state, float height)
 
     if (ImGui::Button("Apply", ImVec2(ButtonWidth("Apply"), 0.0f)))
     {
-        JsonObject request;
-        request.Insert(L"command", JsonValue::CreateStringValue(L"set-volume"));
-        request.Insert(L"volume", JsonValue::CreateStringValue(to_hstring(state.MountedDrive.data())));
-        StartOperation(state, "Setting protected volume...", [request] { return ExecuteCommandAndRefresh(request, "Protected volume updated."); });
+        auto baseline = state.Snapshot;
+        auto mountPoint = std::string(state.MountedDrive.data());
+        StartOperation(state, "Setting protected volume...", [baseline, mountPoint] { return ExecuteSetVolumeChange(mountPoint, baseline); });
     }
 
     if (busy)
@@ -1647,7 +1805,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandleW(nullptr), nullptr, nullptr, nullptr, nullptr, L"SecureVolImGuiNative", nullptr };
     ::RegisterClassExW(&wc);
-    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"SecureVol CompactMain v8", WS_OVERLAPPEDWINDOW, 80, 80, static_cast<int>(760 * mainScale), static_cast<int>(560 * mainScale), nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"SecureVol CompactMain v9", WS_OVERLAPPEDWINDOW, 80, 80, static_cast<int>(760 * mainScale), static_cast<int>(560 * mainScale), nullptr, nullptr, wc.hInstance, nullptr);
 
     if (!CreateDeviceD3D(hwnd))
     {
@@ -1684,6 +1842,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
     AppState state;
     state.Snapshot = LoadLocalSnapshot();
+    auto savedMountPoint = NormalizeDriveRoot(state.Snapshot.ProtectedMountPoint);
+    if (IsDriveRoot(savedMountPoint))
+    {
+        std::snprintf(state.MountedDrive.data(), state.MountedDrive.size(), "%s", savedMountPoint.c_str());
+    }
     state.Draft.Reset(state.Snapshot.DefaultExpectedUser);
 
     bool done = false;

@@ -43,7 +43,7 @@ Important for the current preview:
 - installation must be run as Administrator; the GUI installer requests elevation,
 - if test-signing was just enabled, Windows must be rebooted and the installer run again.
 - repair/update installs backend payloads into versioned directories under `C:\Program Files\SecureVol\payloads`, so a running old service cannot block copying the new release.
-- the installer can configure the SecureVol backend to start with Windows; the backend then loads the minifilter and reapplies the saved policy automatically.
+- the installer can configure the SecureVol backend to start with Windows through both an automatic service and a visible `\SecureVol\StartBackend` scheduled task; the backend then loads the minifilter and reapplies the saved policy automatically.
 
 ## Quick install on a new machine
 
@@ -60,7 +60,7 @@ Run the newer `SecureVol.Installer.exe` as Administrator and click `Repair`. The
 
 ## Startup And Remount Behavior
 
-When the installer option `Start SecureVol backend automatically with Windows` is enabled, `SecureVolSvc` is configured as an automatic Windows service. The service loads `SecureVolFlt` on startup, pushes the saved policy to the driver, and keeps watching the configured mount point such as `A:\`. If the VeraCrypt container is mounted after Windows starts, the service resolves the current volume GUID for that mount point and updates the driver policy without requiring repair.
+When the installer option `Start SecureVol backend automatically with Windows` is enabled, `SecureVolSvc` is configured as an automatic Windows service and the installer also creates a visible `\SecureVol\StartBackend` scheduled task that runs `sc.exe start SecureVolSvc` at system startup. The service loads `SecureVolFlt`, pushes the saved policy to the driver, and keeps watching the configured mount point such as `A:\`. If the VeraCrypt container is mounted after Windows starts, the service resolves the current volume GUID for that mount point and updates the driver policy without requiring repair. The native admin `On` and drive `Apply` actions also resolve the current drive letter locally before writing policy, so they do not depend on a live backend pipe just to bind `A:` to the correct volume GUID.
 
 ## Project status
 

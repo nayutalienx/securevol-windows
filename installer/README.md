@@ -8,7 +8,7 @@ Current state:
 - It supports `check`, `plan`, `install`, `repair`, and `uninstall`.
 - `SecureVol.Installer` is now the GUI bootstrapper for end users.
 - Install and repair use versioned payload directories under `C:\Program Files\SecureVol\payloads` so a running old backend does not block the new release from being copied.
-- The GUI installer exposes `Start SecureVol backend automatically with Windows`, which maps to the setup host `--autostart` option.
+- The GUI installer exposes `Start SecureVol backend automatically with Windows`, which maps to the setup host `--autostart` option and creates both an automatic service configuration and a visible `\SecureVol\StartBackend` scheduled task.
 - `scripts/Build-Release.ps1` produces a portable release layout with:
   - `Install-SecureVol.cmd`
   - `Repair-SecureVol.cmd`
