@@ -873,13 +873,30 @@ internal sealed class InstallerForm : Form
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
+        catch (DiagnosticUploadException ex)
+        {
+            TrySetClipboard(ex.ReportText);
+            AppendInstallerMessage($"ERROR: {ex.Message}");
+            AppendInstallerMessage($"Diagnostics upload failed, but the full local report was copied to clipboard: {ex.ReportPath}");
+            SetStatus("Diagnostics upload failed. Local report copied to clipboard.", Color.DarkRed);
+            MessageBox.Show(
+                this,
+                ex.Message + Environment.NewLine + Environment.NewLine +
+                "The full diagnostic report was copied to the clipboard." + Environment.NewLine +
+                "Local report: " + ex.ReportPath,
+                "SecureVol Installer",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
         catch (Exception ex)
         {
             AppendInstallerMessage($"ERROR: {ex.Message}");
-            SetStatus("Diagnostics upload failed.", Color.DarkRed);
+            await TryCreateAndCopyDiagnosticsFallbackAsync(ex).ConfigureAwait(true);
+            SetStatus("Diagnostics upload failed. Fallback copied if collection succeeded.", Color.DarkRed);
             MessageBox.Show(
                 this,
-                ex.Message,
+                ex.Message + Environment.NewLine + Environment.NewLine +
+                "SecureVol attempted to copy a fresh local diagnostic report to the clipboard.",
                 "SecureVol Installer",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
@@ -1047,6 +1064,34 @@ internal sealed class InstallerForm : Form
         catch
         {
             // Clipboard is a convenience only; the URL is still shown and opened.
+        }
+    }
+
+    private async Task TryCreateAndCopyDiagnosticsFallbackAsync(Exception uploadError)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var report = await DiagnosticReport.CreateAsync(timeout.Token).ConfigureAwait(true);
+            var text = "SecureVol diagnostics upload failed." + Environment.NewLine +
+                       "Release tag: " + BuildIdentity.ReleaseTag + Environment.NewLine +
+                       "Upload error: " + uploadError.Message + Environment.NewLine +
+                       "Local report: " + report.ReportPath + Environment.NewLine +
+                       Environment.NewLine +
+                       report.ReportText;
+            TrySetClipboard(text);
+            AppendInstallerMessage($"Fallback diagnostic report copied to clipboard: {report.ReportPath}");
+        }
+        catch (Exception fallbackError)
+        {
+            TrySetClipboard(
+                "SecureVol diagnostics upload failed." + Environment.NewLine +
+                "Release tag: " + BuildIdentity.ReleaseTag + Environment.NewLine +
+                "Upload error: " + uploadError.Message + Environment.NewLine +
+                "Fallback collection error: " + fallbackError.Message + Environment.NewLine +
+                "Installer executable: " + (Environment.ProcessPath ?? "<unknown>"));
+            AppendInstallerMessage($"Fallback diagnostics collection failed: {fallbackError.Message}");
+            AppendInstallerMessage("Minimal failure details were copied to clipboard.");
         }
     }
 }

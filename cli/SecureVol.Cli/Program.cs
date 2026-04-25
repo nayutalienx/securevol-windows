@@ -376,7 +376,7 @@ internal static class SecureVolCli
     {
         if (args.Length == 0)
         {
-            throw new InvalidOperationException("Usage: securevol diagnostics upload [--open] | create");
+            throw new InvalidOperationException("Usage: securevol diagnostics upload [--open] | copy | create");
         }
 
         switch (args[0].ToLowerInvariant())
@@ -390,14 +390,35 @@ internal static class SecureVolCli
 
             case "upload":
             {
-                var result = await DiagnosticReport.UploadAsync(CancellationToken.None).ConfigureAwait(false);
-                Console.WriteLine($"Provider : {result.Provider}");
-                Console.WriteLine($"Report   : {result.ReportPath}");
-                Console.WriteLine($"URL      : {result.Url}");
-                if (HasFlag(args, "--open"))
+                try
                 {
-                    DiagnosticReport.OpenInBrowser(result.Url);
+                    var result = await DiagnosticReport.UploadAsync(CancellationToken.None).ConfigureAwait(false);
+                    Console.WriteLine($"Provider : {result.Provider}");
+                    Console.WriteLine($"Report   : {result.ReportPath}");
+                    Console.WriteLine($"URL      : {result.Url}");
+                    if (HasFlag(args, "--open"))
+                    {
+                        DiagnosticReport.OpenInBrowser(result.Url);
+                    }
+
+                    return 0;
                 }
+                catch (DiagnosticUploadException ex)
+                {
+                    Console.Error.WriteLine(ex.Message);
+                    Console.Error.WriteLine(TryCopyTextToClipboard(ex.ReportText)
+                        ? "Clipboard: full local diagnostic report copied."
+                        : "Clipboard: failed to copy the local diagnostic report.");
+                    return 1;
+                }
+            }
+            case "copy":
+            {
+                var report = await DiagnosticReport.CreateAsync(CancellationToken.None).ConfigureAwait(false);
+                Console.WriteLine($"Report   : {report.ReportPath}");
+                Console.WriteLine(TryCopyTextToClipboard(report.ReportText)
+                    ? "Clipboard: full local diagnostic report copied."
+                    : "Clipboard: failed to copy the local diagnostic report.");
 
                 return 0;
             }
@@ -447,6 +468,35 @@ internal static class SecureVolCli
 
         process.WaitForExit();
         return process.ExitCode;
+    }
+
+    private static bool TryCopyTextToClipboard(string text)
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "clip.exe",
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false,
+                CreateNoWindow = true
+            });
+
+            if (process is null)
+            {
+                return false;
+            }
+
+            process.StandardInput.Write(text);
+            process.StandardInput.Close();
+            return process.WaitForExit(3000) && process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static void TryStartServiceBestEffort()

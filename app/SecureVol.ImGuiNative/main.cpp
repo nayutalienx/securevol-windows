@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -274,6 +275,44 @@ static std::wstring Utf8ToWide(std::string_view value)
     std::wstring output(static_cast<size_t>(required), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), output.data(), required);
     return output;
+}
+
+static bool CopyTextToClipboard(std::string_view text)
+{
+    auto wide = Utf8ToWide(text);
+    auto bytes = (wide.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory == nullptr)
+    {
+        return false;
+    }
+
+    auto* locked = static_cast<wchar_t*>(GlobalLock(memory));
+    if (locked == nullptr)
+    {
+        GlobalFree(memory);
+        return false;
+    }
+
+    std::memcpy(locked, wide.c_str(), bytes);
+    GlobalUnlock(memory);
+
+    if (!OpenClipboard(nullptr))
+    {
+        GlobalFree(memory);
+        return false;
+    }
+
+    EmptyClipboard();
+    if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr)
+    {
+        CloseClipboard();
+        GlobalFree(memory);
+        return false;
+    }
+
+    CloseClipboard();
+    return true;
 }
 
 static std::string Trim(std::string value)
@@ -1393,6 +1432,45 @@ static void StartOperation(AppState& state, std::string busyText, std::function<
     };
 }
 
+static std::string BuildOperationFailureClipboardText(std::string const& message, DashboardSnapshot const& snapshot)
+{
+    std::string text;
+    text.reserve(2048);
+    text += "SecureVol operation failed\n";
+    text += "release_tag: ";
+    text += kSecureVolReleaseTag;
+    text += "\nmessage: ";
+    text += message;
+    text += "\nprotection_enabled: ";
+    text += snapshot.ProtectionEnabled ? "true" : "false";
+    text += "\nlive_backend: ";
+    text += snapshot.LiveBackend ? "true" : "false";
+    text += "\npipe_up: ";
+    text += snapshot.PipeUp ? "true" : "false";
+    text += "\ndriver_connected: ";
+    text += snapshot.DriverConnected ? "true" : "false";
+    text += "\nservice_status: ";
+    text += snapshot.ServiceStatus;
+    text += "\ndriver_status: ";
+    text += snapshot.DriverStatus;
+    text += "\nprotected_volume: ";
+    text += snapshot.ProtectedVolume;
+    text += "\nprotected_mount_point: ";
+    text += snapshot.ProtectedMountPoint;
+    text += "\ndefault_user: ";
+    text += snapshot.DefaultExpectedUser;
+    text += "\nbackend_label: ";
+    text += snapshot.BackendLabel;
+    if (!snapshot.BackendError.empty())
+    {
+        text += "\nbackend_error: ";
+        text += snapshot.BackendError;
+    }
+
+    text += "\n";
+    return text;
+}
+
 static void ApplyOperationResult(AppState& state, PendingOperation const& operation, OperationResult&& result)
 {
     // A background Sync must not overwrite a newer state-changing action.
@@ -1414,6 +1492,14 @@ static void ApplyOperationResult(AppState& state, PendingOperation const& operat
     state.StatusLine = result.Message.empty()
         ? (result.Success ? "Operation completed." : "Operation failed.")
         : result.Message;
+
+    if (!result.Success)
+    {
+        if (CopyTextToClipboard(BuildOperationFailureClipboardText(state.StatusLine, state.Snapshot)))
+        {
+            state.StatusLine += " Details copied to clipboard.";
+        }
+    }
 
     if (!state.Snapshot.DefaultExpectedUser.empty())
     {

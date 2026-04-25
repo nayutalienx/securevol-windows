@@ -17,6 +17,27 @@ public sealed record DiagnosticUploadResult(
     string Provider,
     string ReportPath);
 
+public sealed class DiagnosticUploadException : InvalidOperationException
+{
+    public DiagnosticUploadException(
+        string message,
+        string reportPath,
+        string reportText,
+        IReadOnlyList<string> failures)
+        : base(message)
+    {
+        ReportPath = reportPath;
+        ReportText = reportText;
+        Failures = failures;
+    }
+
+    public string ReportPath { get; }
+
+    public string ReportText { get; }
+
+    public IReadOnlyList<string> Failures { get; }
+}
+
 public static class DiagnosticReport
 {
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(2);
@@ -102,9 +123,9 @@ public static class DiagnosticReport
         }
 
         TryWriteUploadFailureLog(report.ReportPath, failures);
-        throw new InvalidOperationException(
-            "All diagnostic upload providers failed. Local report: " + report.ReportPath + Environment.NewLine +
-            string.Join(Environment.NewLine, failures));
+        var message = "All diagnostic upload providers failed. Local report: " + report.ReportPath + Environment.NewLine +
+                      string.Join(Environment.NewLine, failures);
+        throw new DiagnosticUploadException(message, report.ReportPath, report.ReportText, failures);
     }
 
     private static async Task<DiagnosticUploadResult> RunUploaderWithTimeoutAsync(
