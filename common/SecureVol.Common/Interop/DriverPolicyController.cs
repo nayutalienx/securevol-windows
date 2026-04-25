@@ -7,6 +7,7 @@ public static class DriverPolicyController
 {
     private const int HResultFilterAlreadyLoaded = unchecked((int)0x80070420);
     private const int HResultFilterInstanceAlreadyExists = unchecked((int)0x801F0012);
+    private const int HResultPrivilegeNotHeld = unchecked((int)0x80070522);
 
     public static DriverStateDto PushPolicy(PolicyConfig policy, uint generation, uint processId)
     {
@@ -23,8 +24,18 @@ public static class DriverPolicyController
 
     public static void EnsureFilterLoaded()
     {
+        if (NativeMethods.IsServiceRunning("SecureVolFlt"))
+        {
+            return;
+        }
+
         var result = NativeMethods.FilterLoad("SecureVolFlt");
         if (result == 0 || result == HResultFilterAlreadyLoaded)
+        {
+            return;
+        }
+
+        if (NativeMethods.IsServiceRunning("SecureVolFlt"))
         {
             return;
         }
@@ -42,6 +53,17 @@ public static class DriverPolicyController
 
         var result = NativeMethods.FilterAttach("SecureVolFlt", volumeName, null, 0, IntPtr.Zero);
         if (result == 0 || result == HResultFilterInstanceAlreadyExists)
+        {
+            return;
+        }
+
+        // SecureVolFlt's INF installs a default minifilter instance with Flags=0,
+        // so Filter Manager auto-attaches it to mounted volumes. On some Windows
+        // 11 builds FilterAttach/FilterLoad can still return ERROR_PRIVILEGE_NOT_HELD
+        // even when the driver service is already running. Do not block SetPolicy
+        // in that case; the driver-side volume GUID check remains the enforcement
+        // scope, and diagnostics still expose fltmc instance state.
+        if (result == HResultPrivilegeNotHeld && NativeMethods.IsServiceRunning("SecureVolFlt"))
         {
             return;
         }

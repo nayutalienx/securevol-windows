@@ -13,6 +13,9 @@ public static class NativeMethods
     public const uint TokenQuery = 0x0008;
     public const int ErrorInsufficientBuffer = 122;
     public static readonly IntPtr InvalidHandleValue = new(-1);
+    private const uint ScManagerConnect = 0x0001;
+    private const uint ServiceQueryStatus = 0x0004;
+    private const uint ServiceRunning = 0x00000004;
 
     [DllImport("fltlib.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int FilterLoad(string lpFilterName);
@@ -81,6 +84,28 @@ public static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool CloseHandle(IntPtr hObject);
 
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenSCManager(
+        string? lpMachineName,
+        string? lpDatabaseName,
+        uint dwDesiredAccess);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenService(
+        IntPtr hSCManager,
+        string lpServiceName,
+        uint dwDesiredAccess);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryServiceStatus(
+        IntPtr hService,
+        out SERVICE_STATUS lpServiceStatus);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseServiceHandle(IntPtr hSCObject);
+
     [DllImport("advapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool CreateProcessWithLogonW(
@@ -132,6 +157,18 @@ public static class NativeMethods
         public IntPtr hThread;
         public uint dwProcessId;
         public uint dwThreadId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SERVICE_STATUS
+    {
+        public uint dwServiceType;
+        public uint dwCurrentState;
+        public uint dwControlsAccepted;
+        public uint dwWin32ExitCode;
+        public uint dwServiceSpecificExitCode;
+        public uint dwCheckPoint;
+        public uint dwWaitHint;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -255,6 +292,38 @@ public static class NativeMethods
         {
             CloseHandle(processInformation.hThread);
             processInformation.hThread = IntPtr.Zero;
+        }
+    }
+
+    public static bool IsServiceRunning(string serviceName)
+    {
+        var scm = OpenSCManager(null, null, ScManagerConnect);
+        if (scm == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            var service = OpenService(scm, serviceName, ServiceQueryStatus);
+            if (service == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            try
+            {
+                return QueryServiceStatus(service, out var status) &&
+                       status.dwCurrentState == ServiceRunning;
+            }
+            finally
+            {
+                CloseServiceHandle(service);
+            }
+        }
+        finally
+        {
+            CloseServiceHandle(scm);
         }
     }
 

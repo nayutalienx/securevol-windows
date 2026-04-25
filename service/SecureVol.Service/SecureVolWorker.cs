@@ -79,8 +79,18 @@ public sealed class SecureVolWorker : BackgroundService
 
     private bool TryEnsureFilterLoaded()
     {
+        if (NativeMethods.IsServiceRunning("SecureVolFlt"))
+        {
+            return true;
+        }
+
         var result = NativeMethods.FilterLoad("SecureVolFlt");
         if (result == 0 || result == HResultServiceAlreadyRunning)
+        {
+            return true;
+        }
+
+        if (NativeMethods.IsServiceRunning("SecureVolFlt"))
         {
             return true;
         }

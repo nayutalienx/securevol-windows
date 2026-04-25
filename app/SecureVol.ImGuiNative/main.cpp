@@ -451,7 +451,7 @@ static void LogAdminTrace(std::string_view eventName, std::string detailsJson = 
 
         log << "{"
             << JsonField("timestampUtc", UtcTimestamp()) << ","
-            << JsonField("releaseTag", kSecureVolReleaseTag) << ","
+            << JsonField("releaseTag", std::string_view(kSecureVolReleaseTag)) << ","
             << JsonField("pid", GetCurrentProcessId()) << ","
             << JsonField("process", WideToUtf8(GetCommandLineW())) << ","
             << JsonField("event", eventName) << ","
