@@ -25,13 +25,20 @@ public sealed class SecureVolWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await _coordinator.InitializeAsync(stoppingToken).ConfigureAwait(false);
+        await Task.Yield();
 
         while (!stoppingToken.IsCancellationRequested)
         {
             FilterPortConnection? connection = null;
             try
             {
-                if (!TryEnsureFilterLoaded())
+                if (!_coordinator.ShouldAttemptDriverConnection())
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!await TryEnsureFilterLoadedAsync(stoppingToken).ConfigureAwait(false))
                 {
                     await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken).ConfigureAwait(false);
                     continue;
@@ -77,6 +84,21 @@ public sealed class SecureVolWorker : BackgroundService
         }
     }
 
+    private async Task<bool> TryEnsureFilterLoadedAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await Task.Run(TryEnsureFilterLoaded, cancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException ex)
+        {
+            LogFilterLoadFailure(ex, "SecureVolFlt load attempt timed out.");
+            return false;
+        }
+    }
+
     private bool TryEnsureFilterLoaded()
     {
         if (NativeMethods.IsServiceRunning("SecureVolFlt"))
@@ -104,5 +126,18 @@ public sealed class SecureVolWorker : BackgroundService
         }
 
         return false;
+    }
+
+    private void LogFilterLoadFailure(Exception exception, string message)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastFilterLoadFailureLog <= TimeSpan.FromSeconds(30))
+        {
+            return;
+        }
+
+        _lastFilterLoadFailureLog = now;
+        _logger.LogWarning(exception, "{Message}", message);
+        _eventLogger.Error(message);
     }
 }

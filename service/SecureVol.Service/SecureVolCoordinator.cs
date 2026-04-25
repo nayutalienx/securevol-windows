@@ -75,11 +75,25 @@ public sealed class SecureVolCoordinator
         return ReloadPolicyAsync(pushToDriver: true, cancellationToken);
     }
 
+    public bool ShouldAttemptDriverConnection()
+    {
+        ExAcquire();
+        try
+        {
+            return ShouldAttemptDriverConnection(_policy);
+        }
+        finally
+        {
+            ExRelease();
+        }
+    }
+
     public async Task RefreshProtectedMountPointAsync(CancellationToken cancellationToken)
     {
         PolicyConfig policy;
         uint generation;
         bool changed = false;
+        bool shouldPush;
 
         await _policyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -96,29 +110,36 @@ public sealed class SecureVolCoordinator
 
             policy = _policy;
             generation = _policyGeneration;
+            shouldPush = ShouldRearmMountedPolicy(policy);
         }
         finally
         {
             _policyGate.Release();
         }
 
-        if (!changed)
+        if (!changed && !shouldPush)
         {
             return;
         }
 
-        await PushPolicyToDriverAsync(cancellationToken).ConfigureAwait(false);
+        if (shouldPush)
+        {
+            await PushPolicyToDriverAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         await _fileLogger.WriteAsync(new
         {
             ts = DateTimeOffset.UtcNow,
             level = "info",
-            evt = "protected-mount-resolved",
+            evt = changed ? "protected-mount-resolved" : "protected-mount-rearmed",
             generation,
             protectedMountPoint = policy.NormalizedProtectedMountPoint,
-            protectedVolume = policy.NormalizedProtectedVolume
+            protectedVolume = policy.NormalizedProtectedVolume,
+            driverConnected = _driverConnection is not null,
+            lastDriverPushError = _lastDriverPushError
         }, cancellationToken).ConfigureAwait(false);
 
-        _eventLogger.Info($"SecureVol protected mount point resolved. Mount='{policy.NormalizedProtectedMountPoint}', Volume='{policy.NormalizedProtectedVolume}'.");
+        _eventLogger.Info($"SecureVol protected mount point {(changed ? "resolved" : "rearmed")}. Mount='{policy.NormalizedProtectedMountPoint}', Volume='{policy.NormalizedProtectedVolume}'.");
         WriteStatusSnapshot();
     }
 
@@ -140,6 +161,44 @@ public sealed class SecureVolCoordinator
 
         try
         {
+            if (policy.ProtectionEnabled && !IsProtectedMountReady(policy))
+            {
+                _lastDriverState = new DriverStateDto(
+                    policy.ProtectionEnabled,
+                    false,
+                    generation,
+                    0,
+                    policy.NormalizedProtectedVolume);
+                _lastDriverPushError = $"Waiting for protected mount point '{policy.NormalizedProtectedMountPoint}' to be mounted.";
+                WriteStatusSnapshot();
+
+                await _fileLogger.WriteAsync(new
+                {
+                    ts = DateTimeOffset.UtcNow,
+                    level = "info",
+                    evt = "driver-push-deferred",
+                    reason = "protected-mount-not-ready",
+                    generation,
+                    protectedMountPoint = policy.NormalizedProtectedMountPoint,
+                    protectedVolume = policy.NormalizedProtectedVolume
+                }, cancellationToken).ConfigureAwait(false);
+
+                return true;
+            }
+
+            if (!policy.ProtectionEnabled && !NativeMethods.IsServiceRunning("SecureVolFlt"))
+            {
+                _lastDriverState = new DriverStateDto(
+                    false,
+                    false,
+                    generation,
+                    0,
+                    policy.NormalizedProtectedVolume);
+                _lastDriverPushError = null;
+                WriteStatusSnapshot();
+                return true;
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
             var state = await Task.Run(
                     () => DriverPolicyController.PushPolicy(policy, generation, (uint)Environment.ProcessId),
@@ -552,6 +611,43 @@ public sealed class SecureVolCoordinator
 
     private static bool IsDriveRoot(string value) =>
         value.Length == 3 && value[1] == ':' && value[2] == '\\';
+
+    private static bool ShouldAttemptDriverConnection(PolicyConfig policy)
+    {
+        if (!policy.ProtectionEnabled)
+        {
+            return false;
+        }
+
+        return IsProtectedMountReady(policy);
+    }
+
+    private static bool IsProtectedMountReady(PolicyConfig policy)
+    {
+        var mountPoint = policy.NormalizedProtectedMountPoint;
+        if (IsDriveRoot(mountPoint))
+        {
+            return Directory.Exists(mountPoint);
+        }
+
+        return !string.IsNullOrWhiteSpace(policy.NormalizedProtectedVolume);
+    }
+
+    private bool ShouldRearmMountedPolicy(PolicyConfig policy)
+    {
+        if (!ShouldAttemptDriverConnection(policy))
+        {
+            return false;
+        }
+
+        if (_driverConnection is null || _lastDriverState is null || _lastDriverPushError is not null)
+        {
+            return true;
+        }
+
+        return !_lastDriverState.ProtectionEnabled ||
+               !string.Equals(_lastDriverState.ProtectedVolumeGuid, policy.NormalizedProtectedVolume, StringComparison.OrdinalIgnoreCase);
+    }
 
     private DriverStateDto BuildDriverState(PolicyConfig policy, uint generation, bool queryConnectedHint = false)
     {
