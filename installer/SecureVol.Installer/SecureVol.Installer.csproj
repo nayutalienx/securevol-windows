@@ -13,4 +13,8 @@
   <ItemGroup Condition="'$(SecureVolPayloadZip)' != ''">
     <EmbeddedResource Include="$(SecureVolPayloadZip)" LogicalName="SecureVol.Payload.zip" />
   </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\common\SecureVol.Common\SecureVol.Common.csproj" />
+  </ItemGroup>
 </Project>

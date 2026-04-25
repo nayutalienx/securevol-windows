@@ -1222,6 +1222,79 @@ static void LaunchInstalledInstallerUpdate()
     }
 }
 
+static std::optional<fs::path> ResolveInstalledCliPath()
+{
+    auto installRoot = ProgramFilesRoot() / L"SecureVol";
+    auto legacyCli = installRoot / L"cli" / L"securevol.exe";
+    if (fs::exists(legacyCli))
+    {
+        return legacyCli;
+    }
+
+    auto payloadsRoot = installRoot / L"payloads";
+    if (!fs::exists(payloadsRoot))
+    {
+        return std::nullopt;
+    }
+
+    std::optional<fs::path> newest;
+    fs::file_time_type newestTime{};
+    std::error_code ec;
+    for (auto const& entry : fs::recursive_directory_iterator(payloadsRoot, fs::directory_options::skip_permission_denied, ec))
+    {
+        if (ec)
+        {
+            break;
+        }
+
+        if (!entry.is_regular_file(ec) || entry.path().filename() != L"securevol.exe")
+        {
+            continue;
+        }
+
+        auto time = entry.last_write_time(ec);
+        if (!newest || (!ec && time > newestTime))
+        {
+            newest = entry.path();
+            newestTime = time;
+        }
+    }
+
+    return newest;
+}
+
+static void LaunchDiagnosticsUpload()
+{
+    auto cliPath = ResolveInstalledCliPath();
+    if (!cliPath)
+    {
+        MessageBoxW(
+            nullptr,
+            L"securevol.exe was not found under C:\\Program Files\\SecureVol. Run the installer Repair action first.",
+            L"SecureVol",
+            MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    auto command = L"/k \"\"" + cliPath->wstring() + L"\" diagnostics upload --open\"";
+    auto result = ShellExecuteW(
+        nullptr,
+        L"runas",
+        L"cmd.exe",
+        command.c_str(),
+        cliPath->parent_path().c_str(),
+        SW_SHOWNORMAL);
+
+    if (reinterpret_cast<intptr_t>(result) <= 32)
+    {
+        MessageBoxW(
+            nullptr,
+            L"Failed to launch SecureVol diagnostics upload.",
+            L"SecureVol",
+            MB_OK | MB_ICONERROR);
+    }
+}
+
 static bool HasBlockingOperation(AppState const& state)
 {
     return state.PendingAction.has_value();
@@ -1433,7 +1506,7 @@ static void DrawHeader(AppState& state)
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("SecureVol");
         ImGui::SameLine();
-        ImGui::TextDisabled("compact-main v10");
+        ImGui::TextDisabled("compact-main v11");
         ImGui::TextDisabled("backend: %s", state.Snapshot.BackendLabel.c_str());
         DrawEllipsizedText(state.StatusLine, 44, true);
 
@@ -1732,6 +1805,11 @@ static void DrawToolsPane(AppState& state, float height)
     if (ImGui::Button("Update", ImVec2(ButtonWidth("Update"), 0.0f)))
     {
         LaunchInstalledInstallerUpdate();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Diag", ImVec2(ButtonWidth("Diag"), 0.0f)))
+    {
+        LaunchDiagnosticsUpload();
     }
     ImGui::SameLine();
     if (ImGui::Button("Quit", ImVec2(ButtonWidth("Quit"), 0.0f)))

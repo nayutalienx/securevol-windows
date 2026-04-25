@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using SecureVol.Common.Diagnostics;
 
 namespace SecureVol.Installer;
 
@@ -26,6 +27,7 @@ internal sealed class InstallerForm : Form
     private readonly Button _uninstallButton;
     private readonly Button _launchAdminButton;
     private readonly Button _openLogsButton;
+    private readonly Button _uploadDiagnosticsButton;
     private readonly Button _quitButton;
     private readonly TextBox _logTextBox;
     private readonly ProgressBar _progressBar;
@@ -158,6 +160,7 @@ internal sealed class InstallerForm : Form
         _uninstallButton = CreateActionButton("Uninstall", async (_, _) => await RunSetupActionAsync("uninstall"));
         _launchAdminButton = CreateActionButton("Launch Admin", (_, _) => LaunchAdminApp());
         _openLogsButton = CreateActionButton("Open Logs", (_, _) => OpenLogsFolder());
+        _uploadDiagnosticsButton = CreateActionButton("Upload Diagnostics", async (_, _) => await UploadDiagnosticsAsync());
         _quitButton = CreateActionButton("Quit", (_, _) => Close());
 
         actionsPanel.Controls.Add(_installButton);
@@ -166,6 +169,7 @@ internal sealed class InstallerForm : Form
         actionsPanel.Controls.Add(_uninstallButton);
         actionsPanel.Controls.Add(_launchAdminButton);
         actionsPanel.Controls.Add(_openLogsButton);
+        actionsPanel.Controls.Add(_uploadDiagnosticsButton);
 
         var statusPanel = new TableLayoutPanel
         {
@@ -786,6 +790,50 @@ internal sealed class InstallerForm : Form
         });
     }
 
+    private async Task UploadDiagnosticsAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        SetBusy(true, "Uploading diagnostics report...");
+        _currentLogPath = Path.Combine(_logsRoot, $"securevol-diagnostics-upload-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+        AppendInstallerMessage("Collecting and uploading SecureVol diagnostics.");
+        AppendInstallerMessage("The report may include local paths, Windows user names, volume IDs, policy rules, and recent SecureVol logs.");
+
+        try
+        {
+            var result = await DiagnosticReport.UploadAsync();
+            AppendInstallerMessage($"Diagnostics uploaded via {result.Provider}: {result.Url}");
+            AppendInstallerMessage($"Local report copy: {result.ReportPath}");
+            TrySetClipboard(result.Url);
+            DiagnosticReport.OpenInBrowser(result.Url);
+            SetStatus("Diagnostics uploaded. URL copied and opened.", Color.DarkGreen);
+            MessageBox.Show(
+                this,
+                $"Diagnostics uploaded via {result.Provider}.{Environment.NewLine}{Environment.NewLine}{result.Url}{Environment.NewLine}{Environment.NewLine}The URL was copied to the clipboard and opened in the browser.",
+                "SecureVol Installer",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            AppendInstallerMessage($"ERROR: {ex.Message}");
+            SetStatus("Diagnostics upload failed.", Color.DarkRed);
+            MessageBox.Show(
+                this,
+                ex.Message,
+                "SecureVol Installer",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetBusy(false, _statusLabel.Text);
+        }
+    }
+
     private void SetBusy(bool value, string statusText)
     {
         _busy = value;
@@ -795,6 +843,7 @@ internal sealed class InstallerForm : Form
         _uninstallButton.Enabled = !value;
         _launchAdminButton.Enabled = !value;
         _openLogsButton.Enabled = !value;
+        _uploadDiagnosticsButton.Enabled = !value;
         _quitButton.Enabled = !value;
         _enableTestSigningCheckBox.Enabled = !value;
         _progressBar.Visible = value;
@@ -887,6 +936,18 @@ internal sealed class InstallerForm : Form
 
     private static string Capitalize(string value) =>
         string.IsNullOrWhiteSpace(value) ? value : char.ToUpperInvariant(value[0]) + value[1..];
+
+    private static void TrySetClipboard(string text)
+    {
+        try
+        {
+            Clipboard.SetText(text);
+        }
+        catch
+        {
+            // Clipboard is a convenience only; the URL is still shown and opened.
+        }
+    }
 }
 
 internal sealed record InstallerStartupAction(string Action, bool EnableTestSigning, bool AutoStart);

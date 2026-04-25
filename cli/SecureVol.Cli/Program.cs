@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using SecureVol.Common;
+using SecureVol.Common.Diagnostics;
 using SecureVol.Common.Interop;
 using SecureVol.Common.Policy;
 
@@ -34,6 +35,7 @@ internal static class SecureVolCli
                 "protection" => await HandleProtectionAsync(rest),
                 "launch" => await HandleLaunchAsync(rest),
                 "hash" => await HandleHashAsync(rest),
+                "diagnostics" => await HandleDiagnosticsAsync(rest),
                 _ => throw new InvalidOperationException($"Unknown command '{command}'.")
             };
         }
@@ -295,6 +297,41 @@ internal static class SecureVolCli
         return 0;
     }
 
+    private static async Task<int> HandleDiagnosticsAsync(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            throw new InvalidOperationException("Usage: securevol diagnostics upload [--open] | create");
+        }
+
+        switch (args[0].ToLowerInvariant())
+        {
+            case "create":
+            {
+                var report = await DiagnosticReport.CreateAsync(CancellationToken.None).ConfigureAwait(false);
+                Console.WriteLine(report.ReportPath);
+                return 0;
+            }
+
+            case "upload":
+            {
+                var result = await DiagnosticReport.UploadAsync(CancellationToken.None).ConfigureAwait(false);
+                Console.WriteLine($"Provider : {result.Provider}");
+                Console.WriteLine($"Report   : {result.ReportPath}");
+                Console.WriteLine($"URL      : {result.Url}");
+                if (HasFlag(args, "--open"))
+                {
+                    DiagnosticReport.OpenInBrowser(result.Url);
+                }
+
+                return 0;
+            }
+
+            default:
+                throw new InvalidOperationException($"Unknown diagnostics subcommand '{args[0]}'.");
+        }
+    }
+
     private static PolicyConfig LoadOrCreatePolicy()
     {
         if (!File.Exists(AppPaths.PolicyFilePath))
@@ -366,6 +403,7 @@ SecureVol CLI
   securevol denies
   securevol hash --image "C:\Path\App.exe"
   securevol launch --app "C:\Path\App.exe" --args "--user-data-dir=V:\Profile" --user ".\vc_app"
+  securevol diagnostics upload --open
 """);
     }
 

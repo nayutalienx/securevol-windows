@@ -66,6 +66,18 @@ Run the newer `SecureVol.Installer.exe` as Administrator and click `Repair`. The
 
 For later updates, launch `SecureVol Installer` from the Start Menu or click `Update` in the native admin UI. This starts the persistent installer from `C:\Program Files\SecureVol\installer`, downloads the latest GitHub artifact, verifies its SHA-256 checksum from the release notes, and runs repair from the downloaded version.
 
+## One-click diagnostics
+
+For broken installs or "policy enabled but not blocking" cases, do not copy logs manually. Run the installer or native admin UI as Administrator and click `Upload Diagnostics` / `Diag`. SecureVol creates a plain-text diagnostic report, uploads it to a public paste endpoint, opens the URL, and keeps a local copy under `C:\ProgramData\SecureVol\diagnostics`.
+
+The same path is available from CLI:
+
+```powershell
+securevol diagnostics upload --open
+```
+
+The uploaded report can include local paths, Windows user names, configured allow rules, volume IDs, service/driver state, `fltmc` output, and recent SecureVol logs. Use it only when you intend to share that diagnostic state.
+
 ## Startup And Remount Behavior
 
 When the installer option `Start SecureVol backend automatically with Windows` is enabled, `SecureVolSvc` is configured as an automatic Windows service and the installer also creates a visible `\SecureVol\StartBackend` scheduled task that runs `sc.exe start SecureVolSvc` at system startup. The service loads `SecureVolFlt`, explicitly attaches the minifilter to the configured mounted drive when protection is enabled, pushes the saved policy to the driver, and keeps watching the configured mount point such as `A:\`. If the VeraCrypt container is mounted after Windows starts, the service resolves the current volume GUID for that mount point and updates the driver policy without requiring repair. The native admin `On` and drive `Apply` actions also resolve the current drive letter locally before writing policy, so they do not depend on a live backend pipe just to bind `A:` to the correct volume GUID.
