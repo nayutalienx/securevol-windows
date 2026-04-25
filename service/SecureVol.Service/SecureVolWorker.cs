@@ -6,7 +6,6 @@ namespace SecureVol.Service;
 
 public sealed class SecureVolWorker : BackgroundService
 {
-    private const int HResultServiceAlreadyRunning = unchecked((int)0x80070420);
     private readonly SecureVolCoordinator _coordinator;
     private readonly ILogger<SecureVolWorker> _logger;
     private readonly WindowsEventLogger _eventLogger;
@@ -101,28 +100,14 @@ public sealed class SecureVolWorker : BackgroundService
 
     private bool TryEnsureFilterLoaded()
     {
-        if (NativeMethods.IsServiceRunning("SecureVolFlt"))
+        try
         {
+            DriverPolicyController.EnsureFilterLoaded();
             return true;
         }
-
-        var result = NativeMethods.FilterLoad("SecureVolFlt");
-        if (result == 0 || result == HResultServiceAlreadyRunning)
+        catch (Exception ex)
         {
-            return true;
-        }
-
-        if (NativeMethods.IsServiceRunning("SecureVolFlt"))
-        {
-            return true;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        if (now - _lastFilterLoadFailureLog > TimeSpan.FromSeconds(30))
-        {
-            _lastFilterLoadFailureLog = now;
-            _logger.LogWarning("SecureVolFlt could not be loaded yet. HRESULT=0x{Result:X8}", result);
-            _eventLogger.Error($"SecureVolFlt could not be loaded yet. HRESULT=0x{result:X8}");
+            LogFilterLoadFailure(ex, "SecureVolFlt could not be loaded yet.");
         }
 
         return false;

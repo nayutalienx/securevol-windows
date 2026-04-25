@@ -13,9 +13,13 @@ public static class NativeMethods
     public const uint TokenQuery = 0x0008;
     public const int ErrorInsufficientBuffer = 122;
     public static readonly IntPtr InvalidHandleValue = new(-1);
+    private const int ErrorServiceAlreadyRunning = 1056;
     private const uint ScManagerConnect = 0x0001;
+    private const uint ServiceStart = 0x0010;
     private const uint ServiceQueryStatus = 0x0004;
     private const uint ServiceRunning = 0x00000004;
+    private const uint ServiceStopped = 0x00000001;
+    private const uint SePrivilegeEnabled = 0x00000002;
 
     [DllImport("fltlib.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int FilterLoad(string lpFilterName);
@@ -104,7 +108,44 @@ public static class NativeMethods
 
     [DllImport("advapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool StartService(
+        IntPtr hService,
+        uint dwNumServiceArgs,
+        IntPtr lpServiceArgVectors);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseServiceHandle(IntPtr hSCObject);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern void SetLastError(uint dwErrCode);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(
+        IntPtr ProcessHandle,
+        uint DesiredAccess,
+        out SafeAccessTokenHandle TokenHandle);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool LookupPrivilegeValue(
+        string? lpSystemName,
+        string lpName,
+        out LUID lpLuid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AdjustTokenPrivileges(
+        SafeAccessTokenHandle TokenHandle,
+        [MarshalAs(UnmanagedType.Bool)] bool DisableAllPrivileges,
+        ref TOKEN_PRIVILEGES NewState,
+        uint BufferLength,
+        IntPtr PreviousState,
+        IntPtr ReturnLength);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -169,6 +210,21 @@ public static class NativeMethods
         public uint dwServiceSpecificExitCode;
         public uint dwCheckPoint;
         public uint dwWaitHint;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID
+    {
+        public uint LowPart;
+        public int HighPart;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES
+    {
+        public uint PrivilegeCount;
+        public LUID Luid;
+        public uint Attributes;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -297,6 +353,98 @@ public static class NativeMethods
 
     public static bool IsServiceRunning(string serviceName)
     {
+        return TryGetServiceState(serviceName, out var state) && state == ServiceRunning;
+    }
+
+    public static bool TryStartService(string serviceName, out int errorCode)
+    {
+        var scm = OpenSCManager(null, null, ScManagerConnect);
+        if (scm == IntPtr.Zero)
+        {
+            errorCode = Marshal.GetLastWin32Error();
+            return false;
+        }
+
+        try
+        {
+            var service = OpenService(scm, serviceName, ServiceStart | ServiceQueryStatus);
+            if (service == IntPtr.Zero)
+            {
+                errorCode = Marshal.GetLastWin32Error();
+                return false;
+            }
+
+            try
+            {
+                if (QueryServiceStatus(service, out var status) && status.dwCurrentState == ServiceRunning)
+                {
+                    errorCode = 0;
+                    return true;
+                }
+
+                if (StartService(service, 0, IntPtr.Zero))
+                {
+                    errorCode = 0;
+                    return true;
+                }
+
+                errorCode = Marshal.GetLastWin32Error();
+                return errorCode == ErrorServiceAlreadyRunning;
+            }
+            finally
+            {
+                CloseServiceHandle(service);
+            }
+        }
+        finally
+        {
+            CloseServiceHandle(scm);
+        }
+    }
+
+    public static bool TryEnablePrivilege(string privilegeName, out int errorCode)
+    {
+        const uint tokenAdjustPrivileges = 0x0020;
+        const uint tokenQuery = 0x0008;
+
+        if (!OpenProcessToken(GetCurrentProcess(), tokenAdjustPrivileges | tokenQuery, out var token))
+        {
+            errorCode = Marshal.GetLastWin32Error();
+            return false;
+        }
+
+        using (token)
+        {
+            if (!LookupPrivilegeValue(null, privilegeName, out var luid))
+            {
+                errorCode = Marshal.GetLastWin32Error();
+                return false;
+            }
+
+            var privileges = new TOKEN_PRIVILEGES
+            {
+                PrivilegeCount = 1,
+                Luid = luid,
+                Attributes = SePrivilegeEnabled
+            };
+
+            SetLastError(0);
+            if (!AdjustTokenPrivileges(token, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero))
+            {
+                errorCode = Marshal.GetLastWin32Error();
+                return false;
+            }
+
+            // AdjustTokenPrivileges can return success while GetLastError reports
+            // ERROR_NOT_ALL_ASSIGNED. Surface that as a real failure.
+            errorCode = Marshal.GetLastWin32Error();
+            return errorCode == 0;
+        }
+    }
+
+    private static bool TryGetServiceState(string serviceName, out uint state)
+    {
+        state = ServiceStopped;
         var scm = OpenSCManager(null, null, ScManagerConnect);
         if (scm == IntPtr.Zero)
         {
@@ -313,8 +461,13 @@ public static class NativeMethods
 
             try
             {
-                return QueryServiceStatus(service, out var status) &&
-                       status.dwCurrentState == ServiceRunning;
+                if (!QueryServiceStatus(service, out var status))
+                {
+                    return false;
+                }
+
+                state = status.dwCurrentState;
+                return true;
             }
             finally
             {

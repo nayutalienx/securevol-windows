@@ -8,6 +8,7 @@ public static class DriverPolicyController
     private const int HResultFilterAlreadyLoaded = unchecked((int)0x80070420);
     private const int HResultFilterInstanceAlreadyExists = unchecked((int)0x801F0012);
     private const int HResultPrivilegeNotHeld = unchecked((int)0x80070522);
+    private const int ErrorServiceAlreadyRunning = 1056;
 
     public static DriverStateDto PushPolicy(PolicyConfig policy, uint generation, uint processId)
     {
@@ -29,10 +30,27 @@ public static class DriverPolicyController
             return;
         }
 
+        NativeMethods.TryEnablePrivilege("SeLoadDriverPrivilege", out _);
+
         var result = NativeMethods.FilterLoad("SecureVolFlt");
         if (result == 0 || result == HResultFilterAlreadyLoaded)
         {
             return;
+        }
+
+        if (NativeMethods.IsServiceRunning("SecureVolFlt"))
+        {
+            return;
+        }
+
+        if (result == HResultPrivilegeNotHeld &&
+            NativeMethods.TryStartService("SecureVolFlt", out var startError) &&
+            startError is 0 or ErrorServiceAlreadyRunning)
+        {
+            if (WaitForFilterServiceRunning(TimeSpan.FromSeconds(5)))
+            {
+                return;
+            }
         }
 
         if (NativeMethods.IsServiceRunning("SecureVolFlt"))
@@ -84,4 +102,20 @@ public static class DriverPolicyController
 
     private static bool IsDriveRoot(string value) =>
         value.Length == 3 && value[1] == ':' && value[2] == '\\';
+
+    private static bool WaitForFilterServiceRunning(TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (NativeMethods.IsServiceRunning("SecureVolFlt"))
+            {
+                return true;
+            }
+
+            Thread.Sleep(100);
+        }
+
+        return NativeMethods.IsServiceRunning("SecureVolFlt");
+    }
 }
