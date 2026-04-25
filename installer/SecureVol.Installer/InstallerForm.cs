@@ -568,7 +568,10 @@ internal sealed class InstallerForm : Form
 
     private static string? ExtractSha256FromReleaseBody(string body)
     {
-        var match = Regex.Match(body, @"SHA-256:\s*([A-Fa-f0-9]{64})", RegexOptions.IgnoreCase);
+        var match = Regex.Match(
+            body,
+            @"SHA\s*-?\s*256\s*(?:checksum|hash)?\s*[:=`\-]*\s*`?([A-Fa-f0-9]{64})`?",
+            RegexOptions.IgnoreCase);
         return match.Success ? match.Groups[1].Value.ToUpperInvariant() : null;
     }
 
