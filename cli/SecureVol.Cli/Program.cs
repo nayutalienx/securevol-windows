@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using SecureVol.Common;
 using SecureVol.Common.Diagnostics;
 using SecureVol.Common.Interop;
@@ -244,6 +245,11 @@ internal static class SecureVolCli
             throw new InvalidOperationException("Usage: securevol protection enable|disable [--volume V:]");
         }
 
+        if (!IsElevated())
+        {
+            throw new InvalidOperationException("securevol protection enable|disable must be run as Administrator.");
+        }
+
         var policy = LoadOrCreatePolicy();
         var requestedVolume = GetOption(args, "--volume");
         var protectedVolume = policy.ProtectedVolume;
@@ -448,6 +454,12 @@ internal static class SecureVolCli
 
     private static bool IsDriveRoot(string value) =>
         value.Length == 3 && value[1] == ':' && value[2] == '\\';
+
+    private static bool IsElevated()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+    }
 
     private static string RequireOption(string[] args, string name) =>
         GetOption(args, name) ?? throw new InvalidOperationException($"Missing required option '{name}'.");

@@ -23,6 +23,8 @@ See `docs/product-backlog.md` for the productization roadmap.
 
 SecureVol manages a Windows service, a Filter Manager minifilter driver, protected policy files under `C:\ProgramData`, and scheduled tasks. Run the installer, repair/update actions, and the native admin UI as Administrator. The GUI installer and native admin app request elevation, but if Windows blocks UAC elevation the operation should be considered failed.
 
+The installer, downloaded auto-update child installer, native admin UI, and `securevol protection enable|disable` CLI path all enforce Administrator execution. Protection toggles are not treated as successful unless the driver control path accepts the policy update.
+
 ## Current UI
 
 The current admin surface is a native Win32/DX11 shell built on upstream [`ocornut/imgui`](https://github.com/ocornut/imgui).

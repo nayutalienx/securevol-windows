@@ -105,6 +105,37 @@ struct ScopedServiceHandle
     }
 };
 
+static bool IsProcessElevated()
+{
+    HANDLE rawToken = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &rawToken))
+    {
+        return false;
+    }
+
+    ScopedHandle token(rawToken);
+    TOKEN_ELEVATION elevation{};
+    DWORD returned = 0;
+    if (!GetTokenInformation(token.Value, TokenElevation, &elevation, sizeof(elevation), &returned))
+    {
+        return false;
+    }
+
+    return elevation.TokenIsElevated != 0;
+}
+
+static bool RelaunchSelfElevated()
+{
+    std::array<wchar_t, MAX_PATH> executable{};
+    if (GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size())) == 0)
+    {
+        return false;
+    }
+
+    auto result = ShellExecuteW(nullptr, L"runas", executable.data(), nullptr, nullptr, SW_SHOWNORMAL);
+    return reinterpret_cast<intptr_t>(result) > 32;
+}
+
 struct AllowRule
 {
     std::string Name;
@@ -1488,7 +1519,7 @@ static void DrawHeader(AppState& state)
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("SecureVol");
         ImGui::SameLine();
-        ImGui::TextDisabled("compact-main v13");
+        ImGui::TextDisabled("compact-main v14");
         ImGui::TextDisabled("backend: %s", state.Snapshot.BackendLabel.c_str());
         DrawEllipsizedText(state.StatusLine, 44, true);
 
@@ -1919,6 +1950,21 @@ static void DrawMainUi(AppState& state)
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
+    if (!IsProcessElevated())
+    {
+        if (RelaunchSelfElevated())
+        {
+            return 0;
+        }
+
+        MessageBoxW(
+            nullptr,
+            L"SecureVol Admin must be launched with administrative rights.",
+            L"SecureVol",
+            MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
     init_apartment(apartment_type::single_threaded);
 
     ImGui_ImplWin32_EnableDpiAwareness();

@@ -431,6 +431,7 @@ internal sealed class InstallerForm : Form
                 FileName = installerPath,
                 WorkingDirectory = Path.GetDirectoryName(installerPath)!,
                 UseShellExecute = true,
+                Verb = "runas",
                 Arguments = string.Join(" ", arguments.Select(QuoteArgument))
             });
 

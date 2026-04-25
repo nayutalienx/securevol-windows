@@ -60,17 +60,25 @@ public static class DiagnosticReport
         boundedCollection.CancelAfter(TimeSpan.FromSeconds(12));
         var report = await CreateAsync(boundedCollection.Token).ConfigureAwait(false);
         var failures = new List<string>();
-
-        foreach (var uploader in new Func<DiagnosticReportResult, CancellationToken, Task<DiagnosticUploadResult>>[]
-                 {
-                     UploadToPasteRsAsync,
-                     UploadToDpasteAsync,
-                     UploadTo0x0Async
-                 })
+        var uploaders = new Func<DiagnosticReportResult, CancellationToken, Task<DiagnosticUploadResult>>[]
         {
+            UploadToPasteRsAsync,
+            UploadToDpasteAsync,
+            UploadTo0x0Async
+        };
+
+        var tasks = uploaders
+            .Select(uploader => RunUploaderWithTimeoutAsync(uploader, report, cancellationToken))
+            .ToList();
+
+        while (tasks.Count > 0)
+        {
+            var completed = await Task.WhenAny(tasks).ConfigureAwait(false);
+            tasks.Remove(completed);
+
             try
             {
-                return await uploader(report, cancellationToken).ConfigureAwait(false);
+                return await completed.ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -81,6 +89,16 @@ public static class DiagnosticReport
         throw new InvalidOperationException(
             "All diagnostic upload providers failed. Local report: " + report.ReportPath + Environment.NewLine +
             string.Join(Environment.NewLine, failures));
+    }
+
+    private static async Task<DiagnosticUploadResult> RunUploaderWithTimeoutAsync(
+        Func<DiagnosticReportResult, CancellationToken, Task<DiagnosticUploadResult>> uploader,
+        DiagnosticReportResult report,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(UploadTimeout + TimeSpan.FromSeconds(2));
+        return await uploader(report, timeout.Token).ConfigureAwait(false);
     }
 
     public static void OpenInBrowser(string url)
