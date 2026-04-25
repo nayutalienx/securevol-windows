@@ -948,6 +948,34 @@ static OperationResult ApplyLocalProtectionChange(bool enabled, DashboardSnapsho
         }
     }
 
+    auto normalizedMountPoint = NormalizeDriveRoot(!Trim(mountPoint).empty() ? mountPoint : baseline.ProtectedMountPoint);
+    if (enabled && IsDriveRoot(normalizedMountPoint))
+    {
+        std::string attachError;
+        auto attachVolume = normalizedMountPoint;
+        attachVolume.pop_back();
+        if (TryRunProcess(L"fltmc.exe", L"attach SecureVolFlt " + Utf8ToWide(attachVolume), 2500, attachError, { 0 }))
+        {
+            actions.push_back("filter attached to " + attachVolume);
+        }
+        else if (!attachError.empty())
+        {
+            actions.push_back("filter attach checked (" + attachError + ")");
+        }
+    }
+
+    std::string reloadError;
+    JsonObject reloadRequest;
+    reloadRequest.Insert(L"command", JsonValue::CreateStringValue(L"reload"));
+    if (auto response = TryAdminCommand(reloadRequest, reloadError, 3000))
+    {
+        actions.push_back(JsonBool(*response, L"success", false) ? "backend reload confirmed" : "backend reload rejected");
+    }
+    else if (!reloadError.empty())
+    {
+        actions.push_back("backend reload pending (" + reloadError + ")");
+    }
+
     auto confirmed = WaitForServiceStatusConfirmation(enabled, 2500);
 
     auto snapshot = LoadLocalSnapshot();

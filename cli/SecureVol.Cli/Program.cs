@@ -87,10 +87,17 @@ internal static class SecureVolCli
         }
 
         var policy = LoadOrCreatePolicy();
+        var requestedVolume = RequireOption(args, "--volume");
+        var normalizedVolume = PolicyConfig.NormalizeVolumeIdentifier(requestedVolume);
+        var mountPoint = normalizedVolume.Length == 3 && normalizedVolume[1] == ':' && normalizedVolume[2] == '\\'
+            ? normalizedVolume
+            : null;
+
         policy = new PolicyConfig
         {
             ProtectionEnabled = policy.ProtectionEnabled,
-            ProtectedVolume = VolumeHelpers.ResolveVolumeGuid(RequireOption(args, "--volume")),
+            ProtectedVolume = VolumeHelpers.ResolveVolumeGuid(requestedVolume),
+            ProtectedMountPoint = mountPoint,
             DefaultExpectedUser = policy.DefaultExpectedUser,
             AllowRules = [.. policy.AllowRules]
         };

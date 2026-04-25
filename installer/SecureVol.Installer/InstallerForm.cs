@@ -804,7 +804,8 @@ internal sealed class InstallerForm : Form
 
         try
         {
-            var result = await DiagnosticReport.UploadAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(28));
+            var result = await DiagnosticReport.UploadAsync(timeout.Token).WaitAsync(TimeSpan.FromSeconds(30));
             AppendInstallerMessage($"Diagnostics uploaded via {result.Provider}: {result.Url}");
             AppendInstallerMessage($"Local report copy: {result.ReportPath}");
             TrySetClipboard(result.Url);

@@ -64,6 +64,7 @@ public static class DiagnosticReport
         foreach (var uploader in new Func<DiagnosticReportResult, CancellationToken, Task<DiagnosticUploadResult>>[]
                  {
                      UploadToPasteRsAsync,
+                     UploadToDpasteAsync,
                      UploadTo0x0Async
                  })
         {
@@ -105,6 +106,29 @@ public static class DiagnosticReport
         }
 
         return new DiagnosticUploadResult(body, "paste.rs", report.ReportPath);
+    }
+
+    private static async Task<DiagnosticUploadResult> UploadToDpasteAsync(
+        DiagnosticReportResult report,
+        CancellationToken cancellationToken)
+    {
+        using var client = CreateUploadClient();
+        using var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["format"] = "url",
+            ["lexer"] = "text",
+            ["expires"] = "604800",
+            ["content"] = report.ReportText
+        });
+
+        using var response = await client.PostAsync("https://dpaste.org/api/", form, cancellationToken).ConfigureAwait(false);
+        var body = (await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)).Trim().Trim('"');
+        if (!response.IsSuccessStatusCode || !Uri.TryCreate(body, UriKind.Absolute, out _))
+        {
+            throw new InvalidOperationException($"dpaste.org returned {(int)response.StatusCode}: {TrimForMessage(body)}");
+        }
+
+        return new DiagnosticUploadResult(body, "dpaste.org", report.ReportPath);
     }
 
     private static async Task<DiagnosticUploadResult> UploadTo0x0Async(
