@@ -18,6 +18,14 @@ public static class NativeMethods
     public static extern int FilterLoad(string lpFilterName);
 
     [DllImport("fltlib.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int FilterAttach(
+        string lpFilterName,
+        string lpVolumeName,
+        string? lpInstanceName,
+        uint dwCreatedInstanceNameLength,
+        IntPtr lpCreatedInstanceName);
+
+    [DllImport("fltlib.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int FilterConnectCommunicationPort(
         string lpPortName,
         uint dwOptions,

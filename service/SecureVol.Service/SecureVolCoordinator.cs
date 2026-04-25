@@ -10,6 +10,7 @@ namespace SecureVol.Service;
 
 public sealed class SecureVolCoordinator
 {
+    private const int HResultFilterInstanceAlreadyExists = unchecked((int)0x801F0012);
     private const int MaxRecentDenyEvents = 128;
     private readonly PolicyEngine _policyEngine;
     private readonly JsonFileLogger _fileLogger;
@@ -146,12 +147,50 @@ public sealed class SecureVolCoordinator
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        TryEnsureFilterAttached(policy);
+
         // The worker owns a long-lived query connection that blocks in FilterGetMessage.
         // Control messages must use a separate short-lived filter port connection, otherwise
         // admin commands can deadlock behind the receive loop.
         using var controlConnection = FilterPortConnection.ConnectControl((uint)Environment.ProcessId);
         controlConnection.SetPolicy(policy.ProtectionEnabled, generation, policy.NormalizedProtectedVolume);
         WriteStatusSnapshot();
+    }
+
+    private void TryEnsureFilterAttached(PolicyConfig policy)
+    {
+        if (!policy.ProtectionEnabled)
+        {
+            return;
+        }
+
+        var volumeName = ResolveAttachVolumeName(policy);
+        if (string.IsNullOrWhiteSpace(volumeName))
+        {
+            _logger.LogWarning("SecureVol protection is enabled but no protected mount point or volume GUID is configured for filter attach.");
+            return;
+        }
+
+        var result = NativeMethods.FilterAttach("SecureVolFlt", volumeName, null, 0, IntPtr.Zero);
+        if (result == 0 || result == HResultFilterInstanceAlreadyExists)
+        {
+            return;
+        }
+
+        _logger.LogWarning("SecureVolFlt could not be attached to '{VolumeName}'. HRESULT=0x{Result:X8}", volumeName, result);
+        _eventLogger.Warning($"SecureVolFlt could not be attached to '{volumeName}'. HRESULT=0x{result:X8}");
+    }
+
+    private static string ResolveAttachVolumeName(PolicyConfig policy)
+    {
+        var mountPoint = policy.NormalizedProtectedMountPoint;
+        if (IsDriveRoot(mountPoint))
+        {
+            return mountPoint.TrimEnd('\\');
+        }
+
+        var volumeGuid = policy.NormalizedProtectedVolume;
+        return string.IsNullOrWhiteSpace(volumeGuid) ? string.Empty : volumeGuid;
     }
 
     public async Task<ProcessReplyMessage> EvaluateQueryAsync(ProcessAccessQuery message, CancellationToken cancellationToken)
