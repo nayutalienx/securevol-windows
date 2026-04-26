@@ -2555,6 +2555,8 @@ static void DrawAddRulePopup(AppState& state)
     }
 
     ImGui::InputText("publisher", state.Draft.Publisher.data(), state.Draft.Publisher.size());
+    ImGui::TextDisabled("Optional. Must exactly match the Authenticode certificate publisher, not file metadata.");
+    ImGui::TextDisabled("Example: Telegram FZ-LLC. Wrong values cause PublisherMismatch.");
     ImGui::InputText("user", state.Draft.User.data(), state.Draft.User.size());
     ImGui::InputText("sha256", state.Draft.Sha256.data(), state.Draft.Sha256.size());
     ImGui::Checkbox("require signature", &state.Draft.RequireSignature);

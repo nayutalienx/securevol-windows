@@ -100,6 +100,18 @@ securevol protection enable --volume A:
 securevol protection disable --volume A:
 ```
 
+## Allow Rule Publisher Matching
+
+The `publisher` field is optional. If it is filled, SecureVol compares it against the executable's Authenticode signing certificate subject name resolved by Windows, not against file description, product name, company metadata, folder name, or what the app calls itself.
+
+This means the value must match exactly what SecureVol logs as `publisher` in deny events. For example, portable Telegram is commonly signed as:
+
+```text
+Telegram FZ-LLC
+```
+
+Using values like `tg llc`, `Telegram`, or file metadata names will cause `PublisherMismatch` and the app will still be denied. For first setup, leave publisher empty and `require signature` unchecked until the path/user rule works. Then optionally tighten the rule by copying the exact publisher from diagnostics or recent deny logs.
+
 ## Project status
 
 SecureVol is already usable as a local defensive tool, but it is still in productization:
