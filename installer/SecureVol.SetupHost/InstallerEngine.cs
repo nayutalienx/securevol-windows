@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using Microsoft.Win32;
@@ -120,8 +121,7 @@ internal static class InstallerEngine
             Console.WriteLine("[SecureVol] Driver update is deferred until reboot because the minifilter is already loaded.");
         }
 
-        if (!rebootRequired &&
-            !TryEnsureFilterLoaded(
+        if (!TryEnsureFilterLoaded(
                 plan.DriverServiceName,
                 readiness.DriverCertificateFound,
                 out var deferredLoadReason))
@@ -580,12 +580,62 @@ internal static class InstallerEngine
             return true;
         }
 
+        string? sameDriverBinaryError = null;
+        if (File.Exists(installedDriverBinary) &&
+            TryFilesHaveSameSha256(packagedDriverBinary, installedDriverBinary, out sameDriverBinaryError) &&
+            sameDriverBinaryError is null)
+        {
+            Console.WriteLine("[SecureVol] Installed driver binary already matches the packaged binary. Skipping driver binary copy.");
+            EnsureMinifilterServiceRegistration(driverServiceName, installedDriverBinary);
+            return false;
+        }
+
+        if (sameDriverBinaryError is not null)
+        {
+            Console.WriteLine($"[SecureVol] Driver binary hash check warning: {sameDriverBinaryError}");
+        }
+
         Console.WriteLine($"[SecureVol] Copying driver binary to '{installedDriverBinary}'.");
         Directory.CreateDirectory(Path.GetDirectoryName(installedDriverBinary)!);
-        CopyFileWithRetry(packagedDriverBinary, installedDriverBinary, TimeSpan.FromSeconds(10));
+
+        try
+        {
+            CopyFileWithRetry(packagedDriverBinary, installedDriverBinary, TimeSpan.FromSeconds(10));
+        }
+        catch (InvalidOperationException ex) when (File.Exists(installedDriverBinary))
+        {
+            // Windows may deny replacing an existing file-system driver binary even when the
+            // service is not currently loaded. Do not fail the whole install in that case:
+            // keep the service registration valid, try to load the existing binary, and stage
+            // the new one for the next reboot if possible.
+            Console.WriteLine($"[SecureVol] Driver binary replacement warning: {ex.Message}");
+            Console.WriteLine("[SecureVol] Existing SecureVolFlt.sys will be used for this boot if it can be loaded.");
+
+            if (!TryScheduleDriverReplacementOnReboot(packagedDriverBinary, installedDriverBinary, out var scheduleError))
+            {
+                Console.WriteLine($"[SecureVol] Driver reboot replacement warning: {scheduleError}");
+            }
+
+            EnsureMinifilterServiceRegistration(driverServiceName, installedDriverBinary);
+            return true;
+        }
 
         EnsureMinifilterServiceRegistration(driverServiceName, installedDriverBinary);
         return false;
+    }
+
+    private static bool TryFilesHaveSameSha256(string leftPath, string rightPath, out string? error)
+    {
+        try
+        {
+            error = null;
+            return FilesHaveSameSha256(leftPath, rightPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException)
+        {
+            error = ex.Message;
+            return false;
+        }
     }
 
     private static bool FilesHaveSameSha256(string leftPath, string rightPath)
@@ -600,6 +650,17 @@ internal static class InstallerEngine
 
     private static void ScheduleDriverReplacementOnReboot(string sourceDriverBinary, string installedDriverBinary)
     {
+        if (!TryScheduleDriverReplacementOnReboot(sourceDriverBinary, installedDriverBinary, out var error))
+        {
+            throw new InvalidOperationException(error);
+        }
+    }
+
+    private static bool TryScheduleDriverReplacementOnReboot(
+        string sourceDriverBinary,
+        string installedDriverBinary,
+        out string? error)
+    {
         var pendingRoot = Path.Combine(AppPaths.ProgramDataRoot, "pending");
         Directory.CreateDirectory(pendingRoot);
 
@@ -611,11 +672,13 @@ internal static class InstallerEngine
                 installedDriverBinary,
                 MoveFileDelayUntilReboot | MoveFileReplaceExisting))
         {
-            throw new InvalidOperationException(
-                $"Failed to schedule SecureVolFlt.sys replacement at reboot. Win32={Marshal.GetLastWin32Error()}");
+            error = $"Failed to schedule SecureVolFlt.sys replacement at reboot. Win32={Marshal.GetLastWin32Error()}";
+            return false;
         }
 
         Console.WriteLine($"[SecureVol] Scheduled SecureVolFlt.sys replacement at next reboot from '{pendingDriverBinary}'.");
+        error = null;
+        return true;
     }
 
     private static void TryStageDriverPackage(string driverInfPath)
